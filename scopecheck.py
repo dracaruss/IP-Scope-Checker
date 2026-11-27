@@ -1341,6 +1341,109 @@ def print_portals(targets):
                         title_align="left"))
 
 
+# --------------------------------------------------------------------------
+# Domains for the mail check (SPF, DKIM, DMARC and friends)
+# --------------------------------------------------------------------------
+try:
+    import tldextract
+    _TLDX = tldextract.TLDExtract(suffix_list_urls=())      # bundled list, no network
+except Exception:
+    _TLDX = None
+MULTI_SUFFIX = {"co.uk", "org.uk", "ac.uk", "gov.uk", "com.au", "net.au", "org.au", "co.nz", "co.jp", "ne.jp",
+                "com.br", "com.cn", "com.mx", "co.za", "co.in", "com.tr", "com.sg", "com.hk", "co.kr", "com.ar",
+                "com.tw", "co.il", "com.my", "com.pl", "com.es", "co.at", "or.at"}
+JUNK_TLDS = {"invalid", "local", "localhost", "internal", "lan", "example", "test", "home", "corp", "domain"}
+EXTRA_IGNORE = {"google.com", "gstatic.com", "azure-mobile.net", "windows.net", "msidentity.com", "akadns.net",
+                "trafficmanager.net", "cloudapp.net"}
+
+
+def registrable(name):
+    """sub.example.co.uk -> example.co.uk. Uses tldextract when installed, otherwise a small built in list."""
+    name = (name or "").lower().strip().rstrip(".").lstrip("*.")
+    if not name or "." not in name or is_ip(name):
+        return ""
+    if _TLDX:
+        r = _TLDX(name)
+        return f"{r.domain}.{r.suffix}" if r.domain and r.suffix else ""
+    parts = name.split(".")
+    if len(parts) >= 3 and ".".join(parts[-2:]) in MULTI_SUFFIX:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def _ignored_domains():
+    out = set(EXTRA_IGNORE)
+    for prov in PROVIDERS:
+        out |= {registrable(x) for x in prov["suffixes"]}
+    out |= {registrable(x) for x in GOV_SUFFIXES}
+    out.discard("")
+    return out
+
+
+def mail_domains(targets, clients, domains):
+    """
+    Returns (client, other): dicts of registrable domain -> list of 'source row N' strings.
+    client = given with -d, or contains a client name, or under a client domain: feed these to the mail tool.
+    other  = seen in certificates, redirects, CNAMEs or input names but not obviously the client's: confirm first.
+    Reverse DNS and Shodan names only count when they are the client's, because they are mostly ISP labels.
+    """
+    ignore = _ignored_domains()
+    keys = [c for c in clients if len(c) >= 4]          # short names like MMC match too much
+    given = {registrable(d) or d for d in domains}
+    client, other = {}, {}
+    for d in sorted(given):
+        client.setdefault(d, []).append("your -d list")
+    for i, t in enumerate(targets, 1):
+        if t.gov:
+            continue
+        cands = ([(t.host, "scope file")] if t.is_name else []) + [(c, "CNAME") for c in t.cnames] + \
+                [(n, "certificate") for n in t.tls_names()] + \
+                [(urlparse(w["final_url"]).hostname or "", "redirect") for w in t.web if w.get("final_url")]
+        weak = [(p, "reverse DNS") for p in t.ptr.values()] + [(h, "Shodan") for h in t.shodan.get("hostnames", [])]
+        for n, src in cands + [(n, src) for n, src in weak]:
+            d = registrable(n)
+            if not d or d in ignore or d.rsplit(".", 1)[-1] in JUNK_TLDS:
+                continue
+            is_client = d in given or any(k in norm(d.rsplit(".", 1)[0]) for k in keys)
+            if src in ("reverse DNS", "Shodan") and not is_client:
+                continue
+            bucket = client if is_client else other
+            note = f"{src} on row {i}"
+            if note not in bucket.setdefault(d, []):
+                bucket[d].append(note)
+    return client, other
+
+
+def _rows_summary(notes, limit=4):
+    rows = sorted({int(n.rsplit(" ", 1)[1]) for n in notes if n.startswith(("certificate", "redirect", "CNAME", "scope file",
+                                                                           "reverse", "Shodan"))})
+    srcs = sorted({n.rsplit(" on row", 1)[0] for n in notes})
+    txt = ", ".join(srcs)
+    if rows:
+        txt += " on row" + ("s " if len(rows) > 1 else " ") + ", ".join(map(str, rows[:limit])) + (" ..." if len(rows) > limit else "")
+    return txt
+
+
+def print_mail_domains(client, other, outdir):
+    if not client and not other:
+        return
+    body = Text()
+    if client:
+        body.append("Client domains. Run the mail check on these:\n", style="bold green")
+        for d, notes in sorted(client.items()):
+            body.append(f"  {d}", style="bold green")
+            body.append(f"   seen in {_rows_summary(notes)}\n", style="dim")
+        body.append(f"Saved to {outdir}/mail_domains.txt\n", style="dim")
+    if other:
+        body.append(("\n" if client else "") + "Other domains seen. Confirm with the client before reporting on them:\n",
+                    style="bold yellow")
+        for d, notes in sorted(other.items()):
+            body.append(f"  {d}", style="bold yellow")
+            body.append(f"   seen in {_rows_summary(notes)}\n", style="dim")
+    console.print()
+    console.print(Panel(body, title="[bold cyan]Domains for the mail check[/]", border_style="cyan", title_align="left"))
+
+
 def print_summary(targets, outdir):
     c = {k: sum(1 for t in targets if t.tier == k) for k in TIER_LABEL}
     live = sum(1 for t in targets if t.live == "live")
@@ -1390,7 +1493,7 @@ def write_csv(targets, path):
                 shodan_vulns=" ".join(t.shodan.get("vulns", [])), takeover=t.takeover, note=t.note))
 
 
-def write_html(targets, path, args, started):
+def write_html(targets, path, args, started, maildoms=({}, {})):
     e = html.escape
     rows = []
     for i, t in enumerate(targets, 1):
@@ -1457,6 +1560,19 @@ def write_html(targets, path, args, started):
     portals = (f"<h2 class=ph>Login portals ({len(portal_rows(targets))})</h2><table class=portals><thead><tr><th>#</th>"
                f"<th>Portal type</th><th>URL</th><th>Title</th><th>Target</th><th>Verdict</th></tr></thead>"
                f"<tbody>{prow}</tbody></table>") if prow else ""
+    mc, mo = maildoms
+    mail = ""
+    if mc or mo:
+        mail = "<h2 class=mh>Domains for the mail check</h2><div class=maild>"
+        if mc:
+            mail += "<div style='color:#22c55e;font-weight:700'>Client domains. Run the mail check on these:</div>"
+            mail += "".join(f"<div><b style='color:#22c55e'>{e(d)}</b> <span class=dim>seen in {e(_rows_summary(n))}</span></div>"
+                            for d, n in sorted(mc.items()))
+        if mo:
+            mail += "<div style='color:#eab308;font-weight:700;margin-top:10px'>Other domains seen. Confirm with the client before reporting on them:</div>"
+            mail += "".join(f"<div><b style='color:#eab308'>{e(d)}</b> <span class=dim>seen in {e(_rows_summary(n))}</span></div>"
+                            for d, n in sorted(mo.items()))
+        mail += "</div>"
     clients = e(", ".join(args.client)) or "not set"
     domains = e(", ".join(args.domain)) or "not set"
     doc = f"""<!DOCTYPE html><html><head><meta charset=utf-8><title>Scope check report</title><style>
@@ -1468,6 +1584,7 @@ h1{{margin:0 0 4px}} .meta{{color:#9ca3af;margin-bottom:16px}}
 table{{border-collapse:collapse;width:100%}} th{{background:#1f2937;text-align:left;padding:8px;position:sticky;top:0}}
 td{{padding:8px;vertical-align:top;border-bottom:1px solid #1f2937}} tr.note td{{color:#cbd5e1;font-size:13px;padding-top:0}}
 .badge{{display:inline-block;padding:2px 8px;border-radius:4px;color:#000;font-weight:700;font-size:12px}}
+.maild{{background:#111827;border:1px solid #0e7490;border-radius:8px;padding:12px 16px;line-height:1.8}}
 .ph{{color:#e879f9;margin:8px 0 8px}} .mh{{margin:28px 0 8px}} table.portals{{border:1px solid #6b21a8}}
 .why{{margin-top:4px;font-size:13px;color:#cbd5e1;max-width:360px}} .dim{{color:#9ca3af;font-size:12px}} .ip{{color:#67e8f9}}
 .mag{{color:#e879f9;font-size:12px}} .live{{color:#22c55e;font-weight:700}} .login{{color:#e879f9;font-weight:700}}
@@ -1483,6 +1600,7 @@ a{{color:#93c5fd}} img{{max-width:260px;margin-top:6px;border:1px solid #374151;
 <div class=card style='border-color:#38bdf8' onclick="f('')"><b>{len(targets)}</b>Show all</div>
 </div>
 {portals}
+{mail}
 <h2 class=mh>All targets</h2>
 <table><thead><tr><th>#</th><th>Target</th><th>What it is</th><th>Owner</th><th>Verdict</th><th>Status</th><th>Ports</th><th>Logins</th></tr></thead>
 <tbody id=main>{''.join(rows)}</tbody></table>
@@ -1560,10 +1678,14 @@ def main():
     print_table(targets, args)
     print_notes(targets)
     print_portals(targets)
+    mclient, mother = mail_domains(targets, r.clients, r.domains)
+    print_mail_domains(mclient, mother, outdir)
+    with open(os.path.join(outdir, "mail_domains.txt"), "w") as fh:
+        fh.write("".join(d + "\n" for d in sorted(mclient)))
     write_csv(targets, os.path.join(outdir, "results.csv"))
     with open(os.path.join(outdir, "results.json"), "w", encoding="utf-8") as fh:
         json.dump([asdict(t) for t in targets], fh, indent=2, default=str)
-    write_html(targets, os.path.join(outdir, "report.html"), args, started)
+    write_html(targets, os.path.join(outdir, "report.html"), args, started, (mclient, mother))
     print_summary(targets, outdir)
     if bad:
         console.print(f"[yellow]Skipped {len(bad)} entries from the input file that are not an IP, range, hostname or URL:[/]")
