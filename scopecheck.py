@@ -278,6 +278,7 @@ class Target:
     shodan: dict = field(default_factory=dict)
     takeover: str = ""
     expected_ip: str = ""
+    base_note: str = ""
     errors: list = field(default_factory=list)
 
     @property
@@ -290,7 +291,9 @@ class Target:
 
     def owner_label(self):
         o = self.owners.get(self.primary_ip) or {}
-        org = o.get("org") or "unknown"
+        org = o.get("org") or ("" if (self.private or not self.ips) else "lookup failed")
+        if self.provider and (org in ("", "lookup failed") or is_handle(org) or (org.isupper() and " " not in org)):
+            org = self.provider
         asn = f"AS{o['asn']}" if o.get("asn") else ""
         return org, asn, o.get("country", "")
 
@@ -602,27 +605,36 @@ class Owners:
         return res
 
 
-HANDLE_RE = re.compile(r"-MNT\b|^RIPE-NCC|^APNIC|^AFRINIC|^LACNIC|^ARIN\b", re.I)
+HANDLE_RE = re.compile(r"-MNT\b|^MNT-|^RIPE-NCC|^APNIC|^AFRINIC|^LACNIC|^ARIN\b", re.I)
+
+
+def is_handle(n):
+    """Registry handles such as HOS-GUN, MNT-PlusServer or RIPE-NCC-HM-MNT, not real organisation names."""
+    n = (n or "").strip()
+    return bool(HANDLE_RE.search(n) or re.fullmatch(r"[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+", n))
 
 
 def clean_asn_name(s):
-    """'SKYNET-AS Proximus NV, BE' -> 'Proximus NV'."""
+    """'SKYNET-AS Proximus NV, BE' -> 'Proximus NV'; 'VTX - VTX Services SA, CH' -> 'VTX Services SA'."""
     s = re.sub(r",\s*[A-Z]{2}$", "", (s or "").strip())
     parts = s.split(" ", 1)
     if len(parts) == 2 and re.fullmatch(r"[A-Z0-9_.-]+", parts[0]):
         s = parts[1]
-    return s.strip()
+    s = s.strip().lstrip("-:| ").strip()
+    if " " not in s:
+        s = re.sub(r"[-_]AS\d*$", "", s, flags=re.I)     # HETZNER-AS -> HETZNER
+    return s
 
 
 def pick_org(registrant, asn_name, entities, netname):
-    """Prefer a real organisation name over registry maintainer handles and personal contacts."""
+    """Prefer a real organisation name over registry handles and personal contacts."""
     for n in registrant:
-        if not HANDLE_RE.search(n):
+        if not is_handle(n):
             return n
-    if asn_name:
+    if asn_name and clean_asn_name(asn_name):
         return clean_asn_name(asn_name)
     for n in entities:
-        if not HANDLE_RE.search(n):
+        if not is_handle(n):
             return n
     return netname
 
@@ -673,25 +685,32 @@ def match_provider(t, use_tls=False):
 
 
 def classify(t, clients, domains, final=False):
-    """green = testable, blue = testable with caveats, red = do not test."""
+    """
+    green = testable (client owned, or a leased static IP)
+    blue  = testable with caveats (cloud, hosting, CDN, Microsoft 365)
+    red   = live but leave alone (vendor SaaS, email gateways, Akamai)
+    grey  = not reachable (no DNS, private IP)
+    A matched provider always decides the verdict, even when the block is registered to the client,
+    because the provider's rules still apply.
+    """
     evidence = [t.host] + t.cnames + list(t.ptr.values()) + t.tls_names()
     t.client_domain_hit = ""
     for n in evidence:
         if n and not is_ip(n) and domains and under(n, domains):
             t.client_domain_hit = n
             break
+    t.provider, t.provider_kind = "", ""
 
     if not t.resolves:
-        t.tier, t.provider = "grey", ""
-        t.note = NOTE_TAKEOVER.format(target=t.cnames[-1]) if t.takeover else NOTE_NXDOMAIN
-        if t.expected_ip:
-            t.note += f" Your scope lists it as {t.expected_ip}."
+        t.tier = "grey"
+        t.base_note = NOTE_TAKEOVER.format(target=t.cnames[-1]) if t.takeover else NOTE_NXDOMAIN
+        t.note = t.base_note + (f" Your scope lists it as {t.expected_ip}." if t.expected_ip else "")
         return
     if t.ips and all(is_private(i) for i in t.ips):
-        t.private, t.tier, t.provider, t.note = True, "grey", "", NOTE_PRIVATE
+        t.private, t.tier = True, "grey"
+        t.base_note = t.note = NOTE_PRIVATE
         return
 
-    org, _, _ = t.owner_label()
     client_reg = False
     if clients:
         for o in t.owners.values():
@@ -701,25 +720,31 @@ def classify(t, clients, domains, final=False):
                 break
 
     prov = match_provider(t, use_tls=final)
-    if client_reg and not (prov and prov["kind"] in ("saas", "cdn", "mail") and t.cnames):
-        t.tier, t.provider, t.provider_kind = "green", "", ""
-        t.note = "Registered to the client."
-    elif prov:
+    extra = []
+    if prov:
         t.tier = TIER_OVERRIDE.get(prov["key"]) or TIER_BY_KIND[prov["kind"]]
         t.provider, t.provider_kind = prov["name"], prov["kind"]
-        t.note = prov["note"].format(name=prov["name"])
+        t.base_note = prov["note"].format(name=prov["name"])
+        if client_reg:
+            extra.append("The IP block is registered to the client.")
         if t.client_domain_hit and t.tier == "blue":
-            t.note += f" Serves {t.client_domain_hit}, so it is the client's own resource."
+            extra.append(f"Serves {t.client_domain_hit}, so it is the client's own resource.")
     else:
-        t.tier, t.provider, t.provider_kind = "green", "", ""
-        if not t.owners or not org or org == "unknown":
-            t.note = "Owner lookup failed, but nothing points to a third party."
+        org = t.owner_label()[0]
+        t.tier = "green"
+        if client_reg:
+            t.base_note = "Registered to the client."
+        elif not t.owners or not org or org == "lookup failed":
+            t.base_note = "Owner lookup failed, but nothing points to a third party."
         else:
-            t.note = f"IP leased from {org}." + (f" Serves {t.client_domain_hit}." if t.client_domain_hit else "")
-    if t.tier == "green" and t.is_name and domains and not t.client_domain_hit:
-        t.note += " Not under the client domains you listed."
+            t.base_note = f"IP leased from {org}."
+        if t.client_domain_hit:
+            extra.append(f"Serves {t.client_domain_hit}.")
+        elif t.is_name and domains:
+            extra.append("Not under the client domains you listed.")
     if t.expected_ip and t.ips and t.expected_ip not in t.ips:
-        t.note += f" WARNING: your scope lists {t.expected_ip}, but it resolves to {', '.join(t.ips[:3])}."
+        extra.append(f"WARNING: your scope lists {t.expected_ip}, but it resolves to {', '.join(t.ips[:3])}.")
+    t.note = " ".join([t.base_note] + extra)
 
 
 # --------------------------------------------------------------------------
@@ -1034,7 +1059,16 @@ class Runner:
 TIER_STYLE = {"green": "bold green", "blue": "bold dodger_blue1", "red": "bold red", "grey": "bold bright_black"}
 TIER_LABEL = {"green": "TESTABLE", "blue": "CAVEATS", "red": "DO NOT TEST", "grey": "NOT REACHABLE"}
 TIER_HEX = {"green": "#22c55e", "blue": "#3b82f6", "red": "#ef4444", "grey": "#6b7280"}
-TIER_ORDER = {"red": 0, "blue": 1, "green": 2, "grey": 3}
+TIER_ORDER = {"green": 0, "blue": 1, "red": 2, "grey": 3}
+
+
+def sort_targets(targets):
+    """Group by verdict, then by provider or owner so similar targets sit together, keeping input order inside."""
+    def group(t):
+        if t.tier == "green":
+            return "" if t.base_note.startswith("Registered to the client") else t.owner_label()[0].lower()
+        return (t.provider or "").lower()
+    return sorted(targets, key=lambda t: (TIER_ORDER[t.tier], group(t)))
 
 
 def known_names(t):
@@ -1125,21 +1159,20 @@ def print_table(targets, args):
 
 
 def print_notes(targets):
-    """Group the caveat, do-not-test and unreachable targets so they can be copied into the scope email."""
+    """Recap of the non-green rows above, one box per provider rule, so IP lists can be copied in one go."""
     groups = {}
-    for t in targets:
-        if t.tier in ("blue", "red", "grey"):
-            key = (t.tier, t.provider or "", t.note.split(" Serves")[0].split(" WARNING")[0])
-            groups.setdefault(key, []).append(t)
+    for i, t in enumerate(targets, 1):
+        if t.tier != "green":
+            groups.setdefault((t.tier, t.provider, t.base_note), []).append((i, t))
     if not groups:
         return
     console.print()
-    console.rule("[bold]Caveats, do not test and unreachable")
-    for (tier, prov, note), ts in sorted(groups.items(), key=lambda kv: (TIER_ORDER[kv[0][0]], kv[0][1])):
-        title = f"{TIER_LABEL[tier]}" + (f": {prov}" if prov else "")
+    console.rule("[bold]Recap by provider: the blue, red and grey rows above, grouped")
+    for (tier, prov, note), items in sorted(groups.items(), key=lambda kv: (TIER_ORDER[kv[0][0]], kv[0][1].lower())):
+        title = TIER_LABEL[tier] + (f": {prov}" if prov else "")
         body = Text(note + "\n", style="white")
-        body.append(", ".join(t.raw for t in ts),
-                    style=TIER_STYLE[tier].replace("bold ", ""))
+        body.append(", ".join(t.raw for _, t in items), style=TIER_STYLE[tier].replace("bold ", ""))
+        body.append(f"\nrows {', '.join(str(i) for i, _ in items)}", style="dim")
         console.print(Panel(body, title=f"[{TIER_STYLE[tier]}]{title}[/]", border_style=TIER_STYLE[tier].replace("bold ", ""),
                             title_align="left"))
 
@@ -1237,7 +1270,10 @@ def write_html(targets, path, args, started):
             verdict += f" <b style='color:{col}'>{e(t.provider)}</b>"
         if t.takeover:
             verdict += " <span class=badge style='background:#ef4444;color:#fff'>TAKEOVER?</span>"
-        verdict += f"<div class=why>{e(t.note)}</div>"
+        main, _, warn = t.note.partition(" WARNING: ")
+        verdict += f"<div class=why>{e(main)}</div>"
+        if warn:
+            verdict += f"<div class=why style='color:#eab308;font-weight:700'>WARNING: {e(warn)}</div>"
         status = {"live": "<span class=live>LIVE</span>", "no response": "<span class=dim>no response</span>"}.get(
             t.live, "<span class=dim>not probed</span>")
         what = ""
@@ -1371,11 +1407,12 @@ def main():
 
     r = Runner(args)
     tools = [f"httpx: {'yes' if r.httpx else 'no'}", f"dnsx: {'yes' if r.dnsx else 'no'}"]
-    mode = "passive only" if args.passive else ("active, skipping third party" if args.skip_red_probe else "active")
+    mode = "passive only" if args.passive else ("active, not probing DO NOT TEST targets" if args.skip_red_probe else "active")
     console.print(f"[dim]{len(targets)} targets | mode: {mode} | {' | '.join(tools)}[/]")
 
     t0 = time.time()
     r.run(targets, outdir)
+    targets = sort_targets(targets)
     print_table(targets, args)
     print_notes(targets)
     print_portals(targets)
