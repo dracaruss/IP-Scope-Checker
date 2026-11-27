@@ -1018,7 +1018,7 @@ class Runner:
 TIER_STYLE = {"green": "bold green", "blue": "bold dodger_blue1", "red": "bold red", "grey": "bold bright_black"}
 TIER_LABEL = {"green": "TESTABLE", "blue": "CAVEATS", "red": "DO NOT TEST", "grey": "NOT REACHABLE"}
 TIER_HEX = {"green": "#22c55e", "blue": "#3b82f6", "red": "#ef4444", "grey": "#6b7280"}
-TIER_ORDER = {"red": 0, "blue": 1, "grey": 2, "green": 3}
+TIER_ORDER = {"red": 0, "blue": 1, "green": 2, "grey": 3}
 
 
 def known_names(t):
@@ -1099,20 +1099,24 @@ def print_table(targets, args):
 
 
 def print_notes(targets):
-    """Group the caveat and do-not-test targets so they can be copied into the scope email."""
+    """Group every target by verdict, one coloured panel per owner or provider."""
     groups = {}
     for t in targets:
-        if t.tier in ("blue", "red", "grey"):
+        if t.tier == "green":
+            org = t.owner_label()[0]
+            label = "Client owned" if t.note.startswith("Registered to the client") else (org if org and org != "unknown" else "")
+            key = (t.tier, label, t.note.split(" Serves")[0].split(" Not under")[0])
+        else:
             key = (t.tier, t.provider or "", t.note.split(" Serves")[0])
-            groups.setdefault(key, []).append(t)
+        groups.setdefault(key, []).append(t)
     if not groups:
         return
     console.print()
-    console.rule("[bold]Caveats, do not test and unreachable")
+    console.rule("[bold]Targets by verdict")
     for (tier, prov, note), ts in sorted(groups.items(), key=lambda kv: (TIER_ORDER[kv[0][0]], kv[0][1])):
         title = f"{TIER_LABEL[tier]}" + (f": {prov}" if prov else "")
         body = Text(note + "\n", style="white")
-        body.append(", ".join(t.raw for t in ts[:30]) + (f" and {len(ts) - 30} more" if len(ts) > 30 else ""),
+        body.append(", ".join(t.raw for t in ts),
                     style=TIER_STYLE[tier].replace("bold ", ""))
         console.print(Panel(body, title=f"[{TIER_STYLE[tier]}]{title}[/]", border_style=TIER_STYLE[tier].replace("bold ", ""),
                             title_align="left"))
