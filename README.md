@@ -20,11 +20,28 @@ The `-c` option is the client's name as it would appear in WHOIS records, and `-
 
 ## Colours
 
-Everything in your file is assumed to be in scope, so the colour only tells you how to treat it. Green means testable with no special conditions, which covers the client's own IPs and static IPs leased from an ISP. Blue means testable with caveats, such as Azure, AWS, Hetzner, a CDN or a Microsoft 365 portal, where you stay inside the client's resources and avoid DoS. Red means the site is live but should be left alone, such as a vendor's SaaS platform or an email gateway. Grey means it cannot be reached, such as a private IP or a hostname that no longer resolves, and it also flags possible subdomain takeovers. Every row shows the URLs and hostnames found for that target, plus a one line reason for its colour. Any login portals found are also listed in their own section, with the portal type, URL and target.
+Green means testable with no special conditions, which covers the client's own IPs and static IPs leased from an ISP.  
+
+Blue means testable with caveats, such as Azure, AWS, Hetzner, a CDN or a Microsoft 365 portal, where you stay inside the client's resources and avoid DoS.  
+
+Red means the site is live but should be left alone, such as a vendor's SaaS platform or an email gateway.  
+
+Grey means it cannot be reached, such as a private IP or a hostname that no longer resolves, and it also flags possible subdomain takeovers.  
+
+Every row shows the URLs and hostnames found for that target, plus a one line reason for its colour. Any login portals found are also listed in their own section, with the portal type, URL and target.
 
 ## Useful options
 
-Add `--screenshots` to capture each web page, `--shodan` to pull known ports and CVEs from Shodan, `--passive` to avoid sending any traffic to the targets, and `--skip-red-probe` to avoid probing third party assets. Run `python3 scopecheck.py -h` to see every option.
+`--screenshots` to capture each web page  
+Open the HTML report in your browser. The screenshots show as thumbnails next to each URL in the "What it is" column, and clicking one opens it full size.  
+`firefox scopecheck_<timestamp>/report.html`  
+Use `xdg-open` instead of firefox to open it in your default browser. The image files themselves are in the screenshots folder inside that same output folder, so keep the folder together if you move or share the report.  
+
+`--shodan` to pull known ports and CVEs from Shodan  
+`--passive` to avoid sending any traffic to the targets  
+`--skip-red-probe` to avoid probing third party assets.  
+
+Run `python3 scopecheck.py -h` to see every option.  
 
 ## Output
 
