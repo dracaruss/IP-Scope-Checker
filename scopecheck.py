@@ -86,45 +86,28 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # Rules of engagement notes. Kept short on purpose. Always confirm against
 # the provider's current policy and the client's written authorisation.
 # --------------------------------------------------------------------------
-NOTE_MS365 = ("Microsoft 365 shared SaaS endpoint. This is Microsoft's system, not the client's. "
-              "Only test the client's own tenant, such as its accounts and configuration, under the "
-              "Microsoft Cloud Penetration Testing Rules of Engagement. No DoS, no attacks on the service "
-              "itself, and report any Microsoft vulnerability to MSRC.")
-NOTE_AZURE = ("Microsoft Azure. No pre-approval is needed for resources the client owns, under the "
-              "Microsoft Cloud Penetration Testing Rules of Engagement. Stay inside the client's resources, "
-              "no DoS or excessive traffic, and no pivoting into Microsoft infrastructure.")
-NOTE_MICROSOFT = ("Microsoft owned address. If it is the client's Azure resource, it can be tested without "
-                  "pre-approval under the Microsoft Cloud Penetration Testing Rules of Engagement, with no DoS. "
-                  "If it is a shared Microsoft 365 endpoint, it is not the client's system, so only test the "
-                  "client's tenant configuration.")
-NOTE_AWS = ("Amazon Web Services. No pre-approval is needed for permitted services in the client's account, "
-            "such as EC2, load balancers, RDS, CloudFront and Lambda. DoS and flooding are prohibited, and "
-            "AWS's own infrastructure is off limits.")
-NOTE_GCP = ("Google Cloud. No notification is needed for the client's own projects, provided testing follows "
-            "Google's Acceptable Use Policy. No DoS and nothing that affects other customers.")
-NOTE_ORACLE = ("Oracle Cloud. Oracle must be notified before the client's own compute resources are tested, "
-               "and testing Oracle SaaS is not permitted. Confirm the client has filed the notification.")
-NOTE_CDN = ("{name} edge. You are hitting the provider's shared network, not the client's server. Only test "
-            "the client's own zone or configuration, do not target the provider itself, and avoid volumetric "
-            "testing. Ask the client for the origin IP if it should be tested directly.")
-NOTE_AKAMAI = ("Akamai edge. This is Akamai's shared network, not the client's server. Akamai's policy requires "
-               "its written permission for penetration testing, so confirm the client has arranged that. Ask for "
-               "the origin IP if it should be tested directly.")
-NOTE_HOSTING = ("{name} hosting space. This is usually a server the client rents, which is normally testable with "
-                "the client's authorisation under the provider's acceptable use policy. Confirm ownership with the "
-                "client and avoid DoS.")
-NOTE_SAAS = ("{name} shared SaaS. The platform belongs to the vendor, not the client. Only test the client's own "
-             "tenant or configuration, and only where the vendor's security testing policy allows it. Otherwise "
-             "treat it as out of scope.")
-NOTE_MAIL = ("{name} email security gateway. This is a shared vendor service, not the client's mail server. Limit "
-             "testing to the client's mail configuration, such as SPF, DMARC and open relay checks, and do not "
-             "attack the gateway itself.")
-NOTE_PRIVATE = ("Private or reserved address. It is not reachable from the internet, so this is probably a "
-                "scoping error to raise with the client.")
-NOTE_NXDOMAIN = "Hostname does not resolve. Confirm with the client whether it is still in use."
-NOTE_TAKEOVER = ("Possible subdomain takeover. The CNAME points at {target}, which no longer resolves. Verify "
-                 "only, and get client approval before claiming the resource, because some providers such as "
-                 "AWS prohibit takeover attempts.")
+NOTE_MS365 = ("Microsoft 365 portal shared by every Microsoft customer. Test only the client's tenant and "
+              "accounts, never the service itself. No DoS.")
+NOTE_AZURE = "Microsoft Azure. No approval needed for the client's own resources. Stay inside them, no DoS or heavy traffic."
+NOTE_MICROSOFT = "Microsoft address. Test only the client's own resources or tenant, not Microsoft's services. No DoS."
+NOTE_AWS = "AWS. No approval needed for common services like EC2, load balancers and CloudFront. No DoS or flooding."
+NOTE_GCP = "Google Cloud. No approval needed for the client's own projects. No DoS."
+NOTE_ORACLE = "Oracle Cloud. Oracle must be notified before testing, and Oracle SaaS cannot be tested at all."
+NOTE_CDN = ("{name} CDN, shared with other customers. Test the client's site only, no DoS or heavy scanning. "
+            "The client's real server sits behind it.")
+NOTE_AKAMAI = "Akamai CDN. Akamai requires its own written permission before any testing."
+NOTE_HOSTING = "{name} hosting. No DoS, and if the IP is shared hosting, test only the client's site."
+NOTE_SAAS = "{name} platform, owned by the vendor, not the client. Only test it if the vendor's testing policy allows it."
+NOTE_MAIL = ("{name} email gateway, a shared vendor service. Do not attack it. Only check the client's mail settings, "
+             "such as SPF and DMARC.")
+NOTE_PRIVATE = "Private IP, not reachable from the internet. Probably a scoping error."
+NOTE_NXDOMAIN = "Hostname does not resolve, so there is nothing to test."
+NOTE_TAKEOVER = ("Points at {target}, which no longer exists. Possible subdomain takeover: report it, but do not "
+                 "claim it without approval.")
+
+# Verdict per provider: blue means testable with caveats, red means do not test.
+TIER_BY_KIND = {"cloud": "blue", "hosting": "blue", "cdn": "blue", "saas": "red", "mail": "red"}
+TIER_OVERRIDE = {"m365": "blue", "akamai": "red"}
 
 
 def P(key, name, kind, note, asns=(), org=None, suffixes=()):
@@ -197,6 +180,10 @@ PROVIDERS = [
             59067, 200517), org=r"\bmicrosoft\b", suffixes=("msft.net", "msedge.net", "microsoft.com")),
     P("digitalocean", "DigitalOcean", "hosting", NOTE_HOSTING, asns=(14061,), org=r"digitalocean",
       suffixes=("digitaloceanspaces.com", "ondigitalocean.app")),
+    P("alibaba", "Alibaba Cloud", "hosting", NOTE_HOSTING, asns=(37963, 45102, 24429, 45103, 45104),
+      org=r"alibaba|aliyun", suffixes=("aliyuncs.com", "alibabacloud.com")),
+    P("liquidweb", "Liquid Web", "hosting", NOTE_HOSTING, asns=(32244, 53824, 59253), org=r"liquid ?web"),
+    P("plusserver", "PlusServer", "hosting", NOTE_HOSTING, asns=(61157,), org=r"plusserver|plus ?server"),
     P("ovh", "OVHcloud", "hosting", NOTE_HOSTING, asns=(16276, 35540), org=r"\bovh\b"),
     P("hetzner", "Hetzner", "hosting", NOTE_HOSTING, asns=(24940, 213230), org=r"hetzner"),
     P("vultr", "Vultr", "hosting", NOTE_HOSTING, asns=(20473,), org=r"vultr|choopa", suffixes=("vultrusercontent.com",)),
@@ -274,7 +261,7 @@ class Target:
     fcrdns: dict = field(default_factory=dict)
     owners: dict = field(default_factory=dict)
     private: bool = False
-    tier: str = "yellow"          # green | yellow | red | grey
+    tier: str = "green"           # green testable | blue caveats | red do not test
     provider: str = ""
     provider_kind: str = ""
     note: str = ""
@@ -549,22 +536,21 @@ class Owners:
         except Exception:
             return None
         net = r.get("network") or {}
-        names = []
+        names, reg = [], []
         for obj in (r.get("objects") or {}).values():
             c = (obj or {}).get("contact") or {}
             if c.get("name") and c["name"] not in names:
-                roles = obj.get("roles") or []
-                if "registrant" in roles:
-                    names.insert(0, c["name"])
-                else:
-                    names.append(c["name"])
-        org = names[0] if names else (net.get("name") or r.get("asn_description") or "")
+                names.append(c["name"])
+                if "registrant" in (obj.get("roles") or []):
+                    reg.append(c["name"])
+        org = pick_org(reg, r.get("asn_description") or "", names, net.get("name") or "")
         return dict(org=org, netname=net.get("name") or "", entities=names, cidr=net.get("cidr") or r.get("asn_cidr") or "",
                     asn=(r.get("asn") or "").split(" ")[0], asn_name=r.get("asn_description") or "",
                     country=net.get("country") or r.get("asn_country_code") or "")
 
     def _rdap(self, ip):
         res = dict(org="", netname="", entities=[], cidr="", asn="", asn_name="", country="")
+        reg = []
         if requests:
             try:
                 j = requests.get(f"https://rdap.org/ip/{ip}", timeout=self.timeout,
@@ -578,10 +564,9 @@ class Owners:
                     for e in ents or []:
                         for item in (e.get("vcardArray") or [None, []])[1]:
                             if item and item[0] == "fn" and item[3] not in res["entities"]:
+                                res["entities"].append(item[3])
                                 if "registrant" in (e.get("roles") or []):
-                                    res["entities"].insert(0, item[3])
-                                else:
-                                    res["entities"].append(item[3])
+                                    reg.append(item[3])
                         walk(e.get("entities"))
                 walk(j.get("entities"))
             except Exception:
@@ -599,8 +584,33 @@ class Owners:
                 res["asn_name"] = txt2[-1].strip()
             except Exception:
                 pass
-        res["org"] = (res["entities"] or [res["netname"] or res["asn_name"] or ""])[0]
+        res["org"] = pick_org(reg, res["asn_name"], res["entities"], res["netname"])
         return res
+
+
+HANDLE_RE = re.compile(r"-MNT\b|^RIPE-NCC|^APNIC|^AFRINIC|^LACNIC|^ARIN\b", re.I)
+
+
+def clean_asn_name(s):
+    """'SKYNET-AS Proximus NV, BE' -> 'Proximus NV'."""
+    s = re.sub(r",\s*[A-Z]{2}$", "", (s or "").strip())
+    parts = s.split(" ", 1)
+    if len(parts) == 2 and re.fullmatch(r"[A-Z0-9_.-]+", parts[0]):
+        s = parts[1]
+    return s.strip()
+
+
+def pick_org(registrant, asn_name, entities, netname):
+    """Prefer a real organisation name over registry maintainer handles and personal contacts."""
+    for n in registrant:
+        if not HANDLE_RE.search(n):
+            return n
+    if asn_name:
+        return clean_asn_name(asn_name)
+    for n in entities:
+        if not HANDLE_RE.search(n):
+            return n
+    return netname
 
 
 def shodan_internetdb(ip, timeout):
@@ -649,7 +659,7 @@ def match_provider(t, use_tls=False):
 
 
 def classify(t, clients, domains, final=False):
-    # client domain evidence, from the name, CNAMEs, PTR and certificate
+    """green = testable, blue = testable with caveats, red = do not test."""
     evidence = [t.host] + t.cnames + list(t.ptr.values()) + t.tls_names()
     t.client_domain_hit = ""
     for n in evidence:
@@ -658,18 +668,18 @@ def classify(t, clients, domains, final=False):
             break
 
     if not t.resolves:
-        t.tier, t.provider = "grey", ""
-        t.note = (NOTE_TAKEOVER.format(target=t.cnames[-1]) if t.takeover else NOTE_NXDOMAIN)
+        t.tier, t.provider = "red", ""
+        t.note = NOTE_TAKEOVER.format(target=t.cnames[-1]) if t.takeover else NOTE_NXDOMAIN
         return
     if t.ips and all(is_private(i) for i in t.ips):
-        t.private, t.tier, t.provider, t.note = True, "grey", "", NOTE_PRIVATE
+        t.private, t.tier, t.provider, t.note = True, "red", "", NOTE_PRIVATE
         return
 
     org, _, _ = t.owner_label()
     client_reg = False
     if clients:
         for o in t.owners.values():
-            blob = norm(" ".join([o.get("org", ""), o.get("netname", "")] + o.get("entities", [])))
+            blob = norm(" ".join([o.get("org", ""), o.get("netname", ""), o.get("asn_name", "")] + o.get("entities", [])))
             if any(c and c in blob for c in clients):
                 client_reg = True
                 break
@@ -677,24 +687,21 @@ def classify(t, clients, domains, final=False):
     prov = match_provider(t, use_tls=final)
     if client_reg and not (prov and prov["kind"] in ("saas", "cdn", "mail") and t.cnames):
         t.tier, t.provider, t.provider_kind = "green", "", ""
-        t.note = f"Registered to the client ({org})."
+        t.note = "Registered to the client."
     elif prov:
-        t.tier, t.provider, t.provider_kind = "red", prov["name"], prov["kind"]
+        t.tier = TIER_OVERRIDE.get(prov["key"]) or TIER_BY_KIND[prov["kind"]]
+        t.provider, t.provider_kind = prov["name"], prov["kind"]
         t.note = prov["note"].format(name=prov["name"])
-        if t.client_domain_hit and prov["kind"] in ("cloud", "hosting"):
-            t.note += f" It serves the client's domain ({t.client_domain_hit}), so it is likely the client's own resource on {prov['name']}."
+        if t.client_domain_hit and t.tier == "blue":
+            t.note += f" Serves {t.client_domain_hit}, so it is the client's own resource."
     else:
-        t.tier, t.provider, t.provider_kind = "yellow", "", ""
+        t.tier, t.provider, t.provider_kind = "green", "", ""
         if not t.owners or not org or org == "unknown":
-            t.note = "Ownership lookup failed. Confirm with the client before testing."
-        elif t.client_domain_hit:
-            t.note = (f"Registered to {org}, not the client, but it serves the client's domain ({t.client_domain_hit}). "
-                      "This suggests a client asset on leased ISP space. Confirm with the client.")
+            t.note = "Owner lookup failed, but nothing points to a third party."
         else:
-            t.note = (f"Registered to {org}, not the client. This is often the client's static IP leased from an ISP, "
-                      "but confirm ownership with the client in writing before testing.")
-    if t.tier != "red" and t.is_name and domains and not t.client_domain_hit:
-        t.note += " The hostname is not under any of the client domains you listed."
+            t.note = f"IP leased from {org}." + (f" Serves {t.client_domain_hit}." if t.client_domain_hit else "")
+    if t.tier == "green" and t.is_name and domains and not t.client_domain_hit:
+        t.note += " Not under the client domains you listed."
 
 
 # --------------------------------------------------------------------------
@@ -983,7 +990,7 @@ class Runner:
                 for f in cf.as_completed([ex.submit(self._safe, self.passive, t) for t in targets]):
                     prog.advance(t1)
             if not self.a.passive:
-                todo = [t for t in targets if t.tier != "grey" and not (self.a.skip_red_probe and t.tier == "red")]
+                todo = [t for t in targets if not t.private and t.resolves and not (self.a.skip_red_probe and t.tier == "red")]
                 t2 = prog.add_task("Active: ping, ports, web, TLS", total=len(todo))
                 with cf.ThreadPoolExecutor(max_workers=self.a.threads) as ex:
                     for f in cf.as_completed([ex.submit(self._safe, self.active, t) for t in todo]):
@@ -1006,101 +1013,102 @@ class Runner:
 # --------------------------------------------------------------------------
 # Output
 # --------------------------------------------------------------------------
-TIER_STYLE = {"green": "bold green", "yellow": "bold yellow", "red": "bold red", "grey": "bold bright_black"}
-TIER_LABEL = {"green": "CLIENT", "yellow": "VERIFY", "red": "3RD PARTY", "grey": "N/A"}
-TIER_HEX = {"green": "#22c55e", "yellow": "#eab308", "red": "#ef4444", "grey": "#6b7280"}
+TIER_STYLE = {"green": "bold green", "blue": "bold dodger_blue1", "red": "bold red"}
+TIER_LABEL = {"green": "TESTABLE", "blue": "CAVEATS", "red": "DO NOT TEST"}
+TIER_HEX = {"green": "#22c55e", "blue": "#3b82f6", "red": "#ef4444"}
+
+
+def known_names(t):
+    """Every hostname tied to the target: input name, certificate names, PTR, Shodan."""
+    names = []
+    for n in ([t.host] if t.is_name else []) + t.tls_names() + list(t.ptr.values()) + t.shodan.get("hostnames", []):
+        n = (n or "").lower()
+        if n and n not in names:
+            names.append(n)
+    return names
 
 
 def print_table(targets, args):
     tb = Table(box=box.SIMPLE_HEAVY, show_lines=True, header_style="bold white on grey23", expand=True)
     tb.add_column("#", justify="right", style="dim", width=3)
     tb.add_column("Target", style="bold", overflow="fold", ratio=3)
-    tb.add_column("IP / Owner", overflow="fold", ratio=4)
-    tb.add_column("Class", ratio=2)
+    tb.add_column("What it is", overflow="fold", ratio=6)
+    tb.add_column("Owner", overflow="fold", ratio=3)
+    tb.add_column("Verdict", overflow="fold", ratio=5)
     tb.add_column("Status", ratio=2)
-    tb.add_column("Open ports", overflow="fold", ratio=2)
-    tb.add_column("Web", overflow="fold", ratio=5)
-    tb.add_column("Logins", overflow="fold", ratio=3)
+    tb.add_column("Ports", overflow="fold", ratio=2)
+    tb.add_column("Logins", overflow="fold", ratio=2)
     for i, t in enumerate(targets, 1):
         org, asn, cc = t.owner_label()
+        # what it is: URLs first, then names
+        what = Text()
+        for w in t.web[:4]:
+            if w["status"] is None:
+                continue
+            sc = w["status"]
+            what.append(f"[{sc}] ", style="green" if sc < 300 else "yellow" if sc < 400 else "red")
+            what.append(w["url"], style="bold blue")
+            if w["title"]:
+                what.append(f"  {w['title'][:60]}", style="white")
+            if w["final_url"] and w["final_url"].rstrip("/") != w["url"].rstrip("/"):
+                what.append(f"\n  > {w['final_url'][:80]}", style="dim")
+            what.append("\n")
+        names = [n for n in known_names(t) if n != t.host]
+        if names:
+            what.append(", ".join(names[:5]) + (" ..." if len(names) > 5 else ""), style="cyan")
+        if t.cnames:
+            what.append(("\n" if names else "") + "CNAME " + " > ".join(t.cnames[-2:]), style="magenta")
+        if not what.plain.strip():
+            what.append("no web service or hostname found", style="dim")
+        for c in t.tls[:1]:
+            if c["expired"]:
+                what.append("  cert EXPIRED", style="bold red")
+            if c["self_signed"]:
+                what.append("  self signed cert", style="yellow")
+
         own = Text()
         if t.ips:
-            own.append(", ".join(t.ips[:3]) + (" ..." if len(t.ips) > 3 else ""), style="cyan")
-            own.append("\n" + org, style="white")
+            if t.is_name:
+                own.append(", ".join(t.ips[:2]) + (" ..." if len(t.ips) > 2 else "") + "\n", style="cyan")
+            own.append(org, style="white")
             if asn or cc:
                 own.append("\n" + f"{asn} {cc}".strip(), style="dim")
-        if t.ptr.get(t.primary_ip):
-            ok = t.fcrdns.get(t.primary_ip)
-            own.append(f"\nPTR {t.ptr[t.primary_ip]}", style="dim")
-            own.append(" (confirmed)" if ok else " (unconfirmed)", style="green" if ok else "dim")
-        if t.cnames:
-            own.append("\nCNAME " + " > ".join(t.cnames[-2:]), style="magenta")
-        cls = Text(TIER_LABEL[t.tier], style=TIER_STYLE[t.tier])
+
+        verdict = Text(TIER_LABEL[t.tier], style=TIER_STYLE[t.tier])
         if t.provider:
-            cls.append("\n" + t.provider, style="red")
-        if t.takeover:
-            cls.append("\nTAKEOVER?", style="bold white on red")
+            verdict.append(f"  {t.provider}", style=TIER_STYLE[t.tier].replace("bold ", ""))
+        verdict.append("\n" + t.note, style="white" if t.tier != "green" else "dim")
+
         if t.live == "live":
             st = Text("LIVE", style="bold green")
-            st.append("\nping" if t.ping else "", style="dim")
         elif t.live == "no response":
             st = Text("no response", style="dim")
         else:
-            st = Text("not probed" if t.resolves else "no DNS", style="dim")
+            st = Text("not probed", style="dim")
         ports = Text(", ".join(map(str, t.open_ports)), style="green")
-        if t.shodan.get("ports"):
-            ports.append(f"\nshodan: {','.join(map(str, t.shodan['ports'][:12]))}", style="dim")
         if t.shodan.get("vulns"):
-            ports.append(f"\n{len(t.shodan['vulns'])} CVEs listed", style="bold red")
-        web = Text()
-        for w in t.web[:4]:
-            if w["status"] is None:
-                web.append(f"{w['url']} {w['error']}\n", style="dim")
-                continue
-            sc = w["status"]
-            col = "green" if sc < 300 else "yellow" if sc < 400 else "red"
-            web.append(f"[{sc}] ", style=col)
-            web.append(f"{w['url']}", style="blue")
-            if w["title"]:
-                web.append(f"\n  {w['title'][:70]}", style="white")
-            if w["final_url"] and w["final_url"].rstrip("/") != w["url"].rstrip("/"):
-                web.append(f"\n  > {w['final_url'][:70]}", style="dim")
-            if w.get("tech"):
-                web.append(f"\n  {', '.join(w['tech'][:5])}", style="dim cyan")
-            web.append("\n")
-        for c in t.tls[:1]:
-            names = [c["cn"]] + [s for s in c["sans"] if s != c["cn"]]
-            web.append("TLS " + ", ".join([n for n in names if n][:4]), style="dim")
-            if c["expired"]:
-                web.append(" EXPIRED", style="bold red")
-            if c["self_signed"]:
-                web.append(" self signed", style="yellow")
+            ports.append(f"\n{len(t.shodan['vulns'])} CVEs", style="bold red")
         logins = Text("\n".join(t.logins), style="bold magenta")
-        tb.add_row(str(i), t.raw, own, cls, st, ports, web, logins)
+        tb.add_row(str(i), t.raw, what, own, verdict, st, ports, logins)
     console.print(tb)
 
 
 def print_notes(targets):
+    """Group the caveat and do-not-test targets so they can be copied into the scope email."""
     groups = {}
     for t in targets:
-        if t.tier in ("red", "yellow", "grey"):
-            key = (t.tier, t.provider or "", t.note if t.tier != "red" else t.note.split(" It serves")[0])
+        if t.tier in ("blue", "red"):
+            key = (t.tier, t.provider or "", t.note.split(" Serves")[0])
             groups.setdefault(key, []).append(t)
     if not groups:
         return
     console.print()
-    console.rule("[bold]Rules of engagement notes")
-    order = {"red": 0, "yellow": 1, "grey": 2}
-    for (tier, prov, note), ts in sorted(groups.items(), key=lambda kv: (order[kv[0][0]], kv[0][1])):
-        title = prov or {"yellow": "Verify ownership", "grey": "Not testable as listed"}[tier]
+    console.rule("[bold]Caveats and do not test")
+    for (tier, prov, note), ts in sorted(groups.items(), key=lambda kv: (kv[0][0] != "red", kv[0][1])):
+        title = f"{TIER_LABEL[tier]}" + (f": {prov}" if prov else "")
         body = Text(note + "\n", style="white")
-        body.append("Targets: ", style="dim")
-        body.append(", ".join(t.raw for t in ts[:25]) + (f" and {len(ts) - 25} more" if len(ts) > 25 else ""),
+        body.append(", ".join(t.raw for t in ts[:30]) + (f" and {len(ts) - 30} more" if len(ts) > 30 else ""),
                     style=TIER_STYLE[tier].replace("bold ", ""))
-        extra = [t for t in ts if t.client_domain_hit and t.tier == "red"]
-        if extra:
-            body.append("\nServing client domains: ", style="dim")
-            body.append(", ".join(f"{t.raw} ({t.client_domain_hit})" for t in extra[:10]), style="green")
         console.print(Panel(body, title=f"[{TIER_STYLE[tier]}]{title}[/]", border_style=TIER_STYLE[tier].replace("bold ", ""),
                             title_align="left"))
 
@@ -1112,10 +1120,9 @@ def print_summary(targets, outdir):
     take = sum(1 for t in targets if t.takeover)
     s = Text()
     s.append(f"{len(targets)} targets   ", style="bold")
-    s.append(f"{c['green']} client   ", style="bold green")
-    s.append(f"{c['yellow']} verify   ", style="bold yellow")
-    s.append(f"{c['red']} third party   ", style="bold red")
-    s.append(f"{c['grey']} not testable   ", style="bold bright_black")
+    s.append(f"{c['green']} testable   ", style="bold green")
+    s.append(f"{c['blue']} with caveats   ", style="bold dodger_blue1")
+    s.append(f"{c['red']} do not test   ", style="bold red")
     s.append(f"{live} live   ", style="bold green")
     s.append(f"{logins} with login portals", style="bold magenta")
     if take:
@@ -1125,7 +1132,7 @@ def print_summary(targets, outdir):
 
 
 def write_csv(targets, path):
-    fields = ["target", "kind", "ips", "cnames", "ptr", "owner", "asn", "asn_name", "country", "class", "provider",
+    fields = ["target", "kind", "ips", "cnames", "ptr", "owner", "asn", "asn_name", "country", "verdict", "provider", "names",
               "status", "open_ports", "web", "logins", "tls_names", "cert_issues", "shodan_ports", "shodan_vulns",
               "takeover", "note"]
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -1143,7 +1150,7 @@ def write_csv(targets, path):
             w.writerow(dict(
                 target=t.raw, kind=t.kind, ips=" ".join(t.ips), cnames=" > ".join(t.cnames),
                 ptr=" ".join(t.ptr.values()), owner=org, asn=asn, asn_name=o.get("asn_name", ""), country=cc,
-                **{"class": TIER_LABEL[t.tier]}, provider=t.provider, status=t.live,
+                verdict=TIER_LABEL[t.tier], provider=t.provider, names=" ".join(known_names(t)), status=t.live,
                 open_ports=" ".join(map(str, t.open_ports)),
                 web=" | ".join(f"{x['status']} {x['url']} {x['title']}" for x in t.web if x["status"]),
                 logins="; ".join(t.logins), tls_names=" ".join(t.tls_names()[:20]), cert_issues="; ".join(issues),
@@ -1157,49 +1164,47 @@ def write_html(targets, path, args, started):
     for i, t in enumerate(targets, 1):
         org, asn, cc = t.owner_label()
         col = TIER_HEX[t.tier]
-        own = f"<span class=ip>{e(', '.join(t.ips))}</span><br>{e(org)}<br><span class=dim>{e(asn)} {e(cc)}</span>"
-        if t.ptr:
-            own += "<br><span class=dim>PTR " + e(", ".join(t.ptr.values())) + "</span>"
-        if t.cnames:
-            own += "<br><span class=mag>CNAME " + e(" > ".join(t.cnames)) + "</span>"
-        badge = f"<span class=badge style='background:{col}'>{TIER_LABEL[t.tier]}</span>"
+        own = f"{e(org)}<br><span class=dim>{e(asn)} {e(cc)}</span>" if t.ips else ""
+        if t.is_name and t.ips:
+            own = f"<span class=ip>{e(', '.join(t.ips))}</span><br>" + own
+        verdict = f"<span class=badge style='background:{col}'>{TIER_LABEL[t.tier]}</span>"
         if t.provider:
-            badge += f"<div class=prov>{e(t.provider)}</div>"
-        if t.takeover:
-            badge += "<div class='badge' style='background:#7f1d1d'>TAKEOVER?</div>"
+            verdict += f" <b style='color:{col}'>{e(t.provider)}</b>"
+        verdict += f"<div class=why>{e(t.note)}</div>"
         status = {"live": "<span class=live>LIVE</span>", "no response": "<span class=dim>no response</span>"}.get(
             t.live, "<span class=dim>not probed</span>")
-        web = ""
+        what = ""
         for w in t.web:
             if w["status"] is None:
-                web += f"<div class=dim>{e(w['url'])} {e(w['error'])}</div>"
                 continue
             sc = w["status"]
             scc = "#22c55e" if sc < 300 else "#eab308" if sc < 400 else "#ef4444"
-            web += (f"<div class=web><span style='color:{scc}'>[{sc}]</span> <a href='{e(w['url'])}' target=_blank>"
-                    f"{e(w['url'])}</a><br><b>{e(w['title'])}</b>")
+            what += (f"<div class=web><span style='color:{scc}'>[{sc}]</span> <a href='{e(w['url'])}' target=_blank>"
+                     f"<b>{e(w['url'])}</b></a> {e(w['title'])}")
             if w["final_url"] and w["final_url"].rstrip("/") != w["url"].rstrip("/"):
-                web += f"<br><span class=dim>&rarr; {e(w['final_url'])}</span>"
+                what += f"<br><span class=dim>&rarr; {e(w['final_url'])}</span>"
             if w["server"] or w.get("tech"):
-                web += f"<br><span class=dim>{e(w['server'])} {e(', '.join(w.get('tech', [])))}</span>"
+                what += f"<br><span class=dim>{e(w['server'])} {e(', '.join(w.get('tech', [])))}</span>"
             if w.get("screenshot"):
-                web += f"<br><a href='{e(w['screenshot'])}' target=_blank><img src='{e(w['screenshot'])}'></a>"
-            web += "</div>"
+                what += f"<br><a href='{e(w['screenshot'])}' target=_blank><img src='{e(w['screenshot'])}'></a>"
+            what += "</div>"
+        names = [n for n in known_names(t) if n != t.host]
+        if names:
+            what += f"<div class=ip>{e(', '.join(names[:10]))}</div>"
+        if t.cnames:
+            what += "<div class=mag>CNAME " + e(" > ".join(t.cnames)) + "</div>"
         for c in t.tls:
-            names = ", ".join(list(dict.fromkeys(n for n in [c["cn"]] + c["sans"] if n))[:8])
-            flags = (" <b style='color:#ef4444'>EXPIRED</b>" if c["expired"] else "") + \
-                    (" <b style='color:#eab308'>self signed</b>" if c["self_signed"] else "")
-            web += f"<div class=dim>TLS :{c['port']} {e(names)} ({e(c['issuer'])}, until {e(c['not_after'])}){flags}</div>"
+            if c["expired"] or c["self_signed"]:
+                what += (f"<div class=dim>Cert on :{c['port']}" + (" <b style='color:#ef4444'>EXPIRED</b>" if c["expired"] else "")
+                         + (" <b style='color:#eab308'>self signed</b>" if c["self_signed"] else "") + "</div>")
+        if not what:
+            what = "<span class=dim>no web service or hostname found</span>"
         ports = e(", ".join(map(str, t.open_ports)))
-        if t.shodan.get("ports"):
-            ports += f"<br><span class=dim>Shodan: {e(', '.join(map(str, t.shodan['ports'])))}</span>"
         if t.shodan.get("vulns"):
             ports += f"<br><span style='color:#ef4444'>{e(', '.join(t.shodan['vulns'][:10]))}</span>"
         logins = "<br>".join(f"<span class=login>{e(l)}</span>" for l in t.logins)
         rows.append(f"<tr style='border-left:6px solid {col}' data-tier='{t.tier}'><td>{i}</td><td><b>{e(t.raw)}</b></td>"
-                    f"<td>{own}</td><td>{badge}</td><td>{status}</td><td>{ports}</td><td>{web}</td><td>{logins}</td></tr>"
-                    f"<tr class=note data-tier='{t.tier}'><td></td><td colspan=7 style='border-left:6px solid {col}'>"
-                    f"<span style='color:{col}'>&#9632;</span> {e(t.note)}</td></tr>")
+                    f"<td>{what}</td><td>{own}</td><td>{verdict}</td><td>{status}</td><td>{ports}</td><td>{logins}</td></tr>")
     c = {k: sum(1 for t in targets if t.tier == k) for k in TIER_LABEL}
     clients = e(", ".join(args.client)) or "not set"
     domains = e(", ".join(args.domain)) or "not set"
@@ -1212,20 +1217,19 @@ h1{{margin:0 0 4px}} .meta{{color:#9ca3af;margin-bottom:16px}}
 table{{border-collapse:collapse;width:100%}} th{{background:#1f2937;text-align:left;padding:8px;position:sticky;top:0}}
 td{{padding:8px;vertical-align:top;border-bottom:1px solid #1f2937}} tr.note td{{color:#cbd5e1;font-size:13px;padding-top:0}}
 .badge{{display:inline-block;padding:2px 8px;border-radius:4px;color:#000;font-weight:700;font-size:12px}}
-.prov{{color:#fca5a5;font-weight:600;margin-top:4px}} .dim{{color:#9ca3af;font-size:12px}} .ip{{color:#67e8f9}}
+.why{{margin-top:4px;font-size:13px;color:#cbd5e1;max-width:360px}} .dim{{color:#9ca3af;font-size:12px}} .ip{{color:#67e8f9}}
 .mag{{color:#e879f9;font-size:12px}} .live{{color:#22c55e;font-weight:700}} .login{{color:#e879f9;font-weight:700}}
 a{{color:#93c5fd}} img{{max-width:260px;margin-top:6px;border:1px solid #374151;border-radius:4px}} .web{{margin-bottom:8px}}
 </style></head><body>
 <h1>Scope check report</h1>
 <div class=meta>Generated {e(started)} &middot; client names: {clients} &middot; client domains: {domains} &middot; {len(targets)} targets</div>
 <div class=cards>
-<div class=card style='border-color:#22c55e' onclick="f('green')"><b>{c['green']}</b>Client</div>
-<div class=card style='border-color:#eab308' onclick="f('yellow')"><b>{c['yellow']}</b>Verify</div>
-<div class=card style='border-color:#ef4444' onclick="f('red')"><b>{c['red']}</b>Third party</div>
-<div class=card style='border-color:#6b7280' onclick="f('grey')"><b>{c['grey']}</b>Not testable</div>
+<div class=card style='border-color:#22c55e' onclick="f('green')"><b>{c['green']}</b>Testable</div>
+<div class=card style='border-color:#3b82f6' onclick="f('blue')"><b>{c['blue']}</b>Testable with caveats</div>
+<div class=card style='border-color:#ef4444' onclick="f('red')"><b>{c['red']}</b>Do not test</div>
 <div class=card style='border-color:#38bdf8' onclick="f('')"><b>{len(targets)}</b>Show all</div>
 </div>
-<table><thead><tr><th>#</th><th>Target</th><th>IP / Owner</th><th>Class</th><th>Status</th><th>Open ports</th><th>Web</th><th>Logins</th></tr></thead>
+<table><thead><tr><th>#</th><th>Target</th><th>What it is</th><th>Owner</th><th>Verdict</th><th>Status</th><th>Ports</th><th>Logins</th></tr></thead>
 <tbody>{''.join(rows)}</tbody></table>
 <p class=dim>Notes summarise provider testing policies and are not a substitute for the provider's current policy or the client's written authorisation.</p>
 <script>function f(t){{document.querySelectorAll('tbody tr').forEach(r=>{{r.style.display=(!t||r.dataset.tier===t)?'':'none'}})}}</script>
@@ -1251,7 +1255,7 @@ def main():
     ap.add_argument("--timeout", type=int, default=3, help="network timeout in seconds (default 3)")
     ap.add_argument("--max-hosts", type=int, default=1024, help="max hosts a single CIDR or range may expand to")
     ap.add_argument("--passive", action="store_true", help="passive only: no ping, ports, HTTP or TLS")
-    ap.add_argument("--skip-red-probe", action="store_true", help="do not actively probe third party (red) targets")
+    ap.add_argument("--skip-red-probe", action="store_true", help="do not actively probe DO NOT TEST (red) targets")
     ap.add_argument("--screenshots", action="store_true", help="screenshot web services (gowitness, else headless Chrome)")
     ap.add_argument("--shodan", action="store_true", help="query Shodan InternetDB (free, no key) for known ports and CVEs")
     ap.add_argument("--no-external-tools", action="store_true", help="ignore httpx, dnsx and gowitness even if installed")

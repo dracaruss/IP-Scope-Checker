@@ -16,32 +16,15 @@ Put your targets in a text file, one per line. The file can mix IP addresses, CI
 python3 scopecheck.py -i scope.txt -c "Acme Corp" -d acme.com
 ```
 
-The `-c` option is the client's name as it would appear in WHOIS records.
-
-The -c flag is the client's name as it appears in the WHOIS registration for their IP blocks, such as "Acme Corp". The tool checks it against the owner name on each IP, ignoring case, spaces and punctuation, and any match is marked green as a client asset. Without -c, nothing can turn green. If the client registers under several names, repeat the flag, like -c "Acme Corp" -c "Acme Holdings". Avoid very short names, because the check is a partial match and something like "ACM" could match unrelated organisations.
-
--d getmymoney.com covers every subdomain under it, including dev.getmymoney.com, so you never list the subdomain itself as the domain. Put dev.getmymoney.com in your scope file and run:
-
-`python3 scopecheck.py -i scope.txt -c "matchmymoney" -d matchmymoney.com`
-
-The -c value is only matched against the IP owner's registered name. Since spaces are ignored, it would also match "Get My Money LLC". A dev site is most likely hosted on AWS, Azure or similar, so expect it to show red with a note that it serves the client's domain. If the company is registered under a different legal name, add that with a second -c.
-
- `-d` is a domain the client owns. You can repeat both options as many times as you need.
- 
-The -d flag is a domain the client owns, such as acme.com. It doesn't change the colour. It adds evidence to the note by checking whether the hostname, CNAME, reverse DNS name or TLS certificate falls under that domain. For example, a Comcast IP whose certificate says vpn.acme.com is probably the client's leased line. An Azure IP serving acme.com is probably the client's own Azure resource. The flag also warns you when a hostname in your scope isn't under any of the client's domains.
+The `-c` option is the client's name as it would appear in WHOIS records, and `-d` is a domain the client owns. You can repeat both options as many times as you need.
 
 ## Colours
 
-Green means the address is registered to the client. Yellow means it belongs to an ISP or an unknown owner, so you should confirm it with the client. Red means it belongs to a third party provider, and the report includes that provider's rules of engagement. Grey means the address is private or the hostname does not resolve.
+Everything in your file is assumed to be in scope, so the colour only tells you how to treat it. Green means testable with no special conditions, which covers the client's own IPs and static IPs leased from an ISP. Blue means testable with caveats, such as Azure, AWS, Hetzner, a CDN or a Microsoft 365 portal, where you stay inside the client's resources and avoid DoS. Red means do not test, such as a vendor's SaaS platform, an email gateway, a private IP or a hostname that no longer resolves. Every row shows the URLs and hostnames found for that target, plus a one line reason for its colour.
 
 ## Useful options
 
-`--screenshots` to capture each web page  
-`--shodan` to pull known ports and CVEs from Shodan  
-`--passive` to avoid sending any traffic to the targets  
-`--skip-red-probe` to avoid probing third party assets  
-
-Run `python3 scopecheck.py -h` to see every option.
+Add `--screenshots` to capture each web page, `--shodan` to pull known ports and CVEs from Shodan, `--passive` to avoid sending any traffic to the targets, and `--skip-red-probe` to avoid probing third party assets. Run `python3 scopecheck.py -h` to see every option.
 
 ## Output
 
