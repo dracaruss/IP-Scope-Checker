@@ -88,15 +88,17 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # --------------------------------------------------------------------------
 NOTE_MS365 = ("Microsoft 365 portal shared by every Microsoft customer. Test only the client's tenant and "
               "accounts, never the service itself. No DoS.")
-NOTE_AZURE = "Microsoft Azure. No approval needed for the client's own resources. Stay inside them, no DoS or heavy traffic."
+NOTE_AZURE = ("Microsoft Azure. No approval needed for the client's own resources. Scanning, fuzzing and brute forcing "
+              "are fine at a sensible rate. Just no DoS.")
 NOTE_MICROSOFT = "Microsoft address. Test only the client's own resources or tenant, not Microsoft's services. No DoS."
-NOTE_AWS = "AWS. No approval needed for common services like EC2, load balancers and CloudFront. No DoS or flooding."
-NOTE_GCP = "Google Cloud. No approval needed for the client's own projects. No DoS."
+NOTE_AWS = ("AWS. No approval needed for common services like EC2, load balancers and CloudFront. Brute forcing is "
+            "fine at a sensible rate, but no DoS or request flooding.")
+NOTE_GCP = "Google Cloud. No approval needed for the client's own projects. Normal testing is fine, just no DoS."
 NOTE_ORACLE = "Oracle Cloud. Oracle must be notified before testing, and Oracle SaaS cannot be tested at all."
 NOTE_CDN = ("{name} CDN, shared with other customers. Test the client's site only, no DoS or heavy scanning. "
             "The client's real server sits behind it.")
 NOTE_AKAMAI = "Akamai CDN. Akamai requires its own written permission before any testing."
-NOTE_HOSTING = "{name} hosting. No DoS, and if the IP is shared hosting, test only the client's site."
+NOTE_HOSTING = "{name} hosting. Normal testing is fine, just no DoS. If the IP is shared hosting, test only the client's site."
 NOTE_SAAS = "{name} platform, owned by the vendor, not the client. Only test it if the vendor's testing policy allows it."
 NOTE_MAIL = ("{name} email gateway, a shared vendor service. Do not attack it. Only check the client's mail settings, "
              "such as SPF and DMARC.")
