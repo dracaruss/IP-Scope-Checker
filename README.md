@@ -20,7 +20,7 @@ The `-c` option is the client's name as it would appear in WHOIS records, and `-
 
 ## Colours
 
-Everything in your file is assumed to be in scope, so the colour only tells you how to treat it. Green means testable with no special conditions, which covers the client's own IPs and static IPs leased from an ISP. Blue means testable with caveats, such as Azure, AWS, Hetzner, a CDN or a Microsoft 365 portal, where you stay inside the client's resources and avoid DoS. Red means do not test, such as a vendor's SaaS platform, an email gateway, a private IP or a hostname that no longer resolves. Every row shows the URLs and hostnames found for that target, plus a one line reason for its colour.
+Everything in your file is assumed to be in scope, so the colour only tells you how to treat it. Green means testable with no special conditions, which covers the client's own IPs and static IPs leased from an ISP. Blue means testable with caveats, such as Azure, AWS, Hetzner, a CDN or a Microsoft 365 portal, where you stay inside the client's resources and avoid DoS. Red means the site is live but should be left alone, such as a vendor's SaaS platform or an email gateway. Grey means it cannot be reached, such as a private IP or a hostname that no longer resolves, and it also flags possible subdomain takeovers. Every row shows the URLs and hostnames found for that target, plus a one line reason for its colour. Any login portals found are also listed in their own section, with the portal type, URL and target.
 
 ## Useful options
 

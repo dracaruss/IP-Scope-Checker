@@ -101,7 +101,7 @@ NOTE_SAAS = "{name} platform, owned by the vendor, not the client. Only test it 
 NOTE_MAIL = ("{name} email gateway, a shared vendor service. Do not attack it. Only check the client's mail settings, "
              "such as SPF and DMARC.")
 NOTE_PRIVATE = "Private IP, not reachable from the internet. Probably a scoping error."
-NOTE_NXDOMAIN = "Hostname does not resolve, so there is nothing to test."
+NOTE_NXDOMAIN = "Hostname does not resolve, so there is nothing to reach."
 NOTE_TAKEOVER = ("Points at {target}, which no longer exists. Possible subdomain takeover: report it, but do not "
                  "claim it without approval.")
 
@@ -261,7 +261,7 @@ class Target:
     fcrdns: dict = field(default_factory=dict)
     owners: dict = field(default_factory=dict)
     private: bool = False
-    tier: str = "green"           # green testable | blue caveats | red do not test
+    tier: str = "green"           # green testable | blue caveats | red leave alone | grey unreachable
     provider: str = ""
     provider_kind: str = ""
     note: str = ""
@@ -668,11 +668,11 @@ def classify(t, clients, domains, final=False):
             break
 
     if not t.resolves:
-        t.tier, t.provider = "red", ""
+        t.tier, t.provider = "grey", ""
         t.note = NOTE_TAKEOVER.format(target=t.cnames[-1]) if t.takeover else NOTE_NXDOMAIN
         return
     if t.ips and all(is_private(i) for i in t.ips):
-        t.private, t.tier, t.provider, t.note = True, "red", "", NOTE_PRIVATE
+        t.private, t.tier, t.provider, t.note = True, "grey", "", NOTE_PRIVATE
         return
 
     org, _, _ = t.owner_label()
@@ -1013,9 +1013,10 @@ class Runner:
 # --------------------------------------------------------------------------
 # Output
 # --------------------------------------------------------------------------
-TIER_STYLE = {"green": "bold green", "blue": "bold dodger_blue1", "red": "bold red"}
-TIER_LABEL = {"green": "TESTABLE", "blue": "CAVEATS", "red": "DO NOT TEST"}
-TIER_HEX = {"green": "#22c55e", "blue": "#3b82f6", "red": "#ef4444"}
+TIER_STYLE = {"green": "bold green", "blue": "bold dodger_blue1", "red": "bold red", "grey": "bold bright_black"}
+TIER_LABEL = {"green": "TESTABLE", "blue": "CAVEATS", "red": "DO NOT TEST", "grey": "NOT REACHABLE"}
+TIER_HEX = {"green": "#22c55e", "blue": "#3b82f6", "red": "#ef4444", "grey": "#6b7280"}
+TIER_ORDER = {"red": 0, "blue": 1, "grey": 2, "green": 3}
 
 
 def known_names(t):
@@ -1075,6 +1076,8 @@ def print_table(targets, args):
                 own.append("\n" + f"{asn} {cc}".strip(), style="dim")
 
         verdict = Text(TIER_LABEL[t.tier], style=TIER_STYLE[t.tier])
+        if t.takeover:
+            verdict.append("  TAKEOVER?", style="bold white on red")
         if t.provider:
             verdict.append(f"  {t.provider}", style=TIER_STYLE[t.tier].replace("bold ", ""))
         verdict.append("\n" + t.note, style="white" if t.tier != "green" else "dim")
@@ -1097,20 +1100,53 @@ def print_notes(targets):
     """Group the caveat and do-not-test targets so they can be copied into the scope email."""
     groups = {}
     for t in targets:
-        if t.tier in ("blue", "red"):
+        if t.tier in ("blue", "red", "grey"):
             key = (t.tier, t.provider or "", t.note.split(" Serves")[0])
             groups.setdefault(key, []).append(t)
     if not groups:
         return
     console.print()
-    console.rule("[bold]Caveats and do not test")
-    for (tier, prov, note), ts in sorted(groups.items(), key=lambda kv: (kv[0][0] != "red", kv[0][1])):
+    console.rule("[bold]Caveats, do not test and unreachable")
+    for (tier, prov, note), ts in sorted(groups.items(), key=lambda kv: (TIER_ORDER[kv[0][0]], kv[0][1])):
         title = f"{TIER_LABEL[tier]}" + (f": {prov}" if prov else "")
         body = Text(note + "\n", style="white")
         body.append(", ".join(t.raw for t in ts[:30]) + (f" and {len(ts) - 30} more" if len(ts) > 30 else ""),
                     style=TIER_STYLE[tier].replace("bold ", ""))
         console.print(Panel(body, title=f"[{TIER_STYLE[tier]}]{title}[/]", border_style=TIER_STYLE[tier].replace("bold ", ""),
                             title_align="left"))
+
+
+def portal_rows(targets):
+    """One row per web URL that showed a login portal."""
+    rows = []
+    for i, t in enumerate(targets, 1):
+        for w in t.web:
+            if w.get("logins"):
+                rows.append((i, t, w))
+    return rows
+
+
+def print_portals(targets):
+    rows = portal_rows(targets)
+    if not rows:
+        return
+    console.print()
+    tb = Table(box=box.SIMPLE, header_style="bold magenta", expand=True, show_edge=False)
+    tb.add_column("#", justify="right", style="dim", width=3)
+    tb.add_column("Portal type", style="bold magenta", ratio=3)
+    tb.add_column("URL", style="bold blue", overflow="fold", ratio=5)
+    tb.add_column("Title", overflow="fold", ratio=3)
+    tb.add_column("Target", overflow="fold", ratio=3)
+    tb.add_column("Verdict", ratio=2)
+    for i, t, w in rows:
+        final = w["final_url"] if w["final_url"] and w["final_url"].rstrip("/") != w["url"].rstrip("/") else ""
+        url = Text(w["url"])
+        if final:
+            url.append(f"\n> {final}", style="dim")
+        tb.add_row(str(i), ", ".join(w["logins"]), url, w["title"][:60], t.raw,
+                   Text(TIER_LABEL[t.tier] + (f"\n{t.provider}" if t.provider else ""), style=TIER_STYLE[t.tier]))
+    console.print(Panel(tb, title=f"[bold magenta]Login portals ({len(rows)})[/]", border_style="magenta",
+                        title_align="left"))
 
 
 def print_summary(targets, outdir):
@@ -1123,8 +1159,9 @@ def print_summary(targets, outdir):
     s.append(f"{c['green']} testable   ", style="bold green")
     s.append(f"{c['blue']} with caveats   ", style="bold dodger_blue1")
     s.append(f"{c['red']} do not test   ", style="bold red")
+    s.append(f"{c['grey']} not reachable   ", style="bold bright_black")
     s.append(f"{live} live   ", style="bold green")
-    s.append(f"{logins} with login portals", style="bold magenta")
+    s.append(f"{len(portal_rows(targets))} login portals on {logins} targets", style="bold magenta")
     if take:
         s.append(f"   {take} possible takeovers", style="bold white on red")
     console.print(Panel(s, title="Summary", border_style="cyan", title_align="left"))
@@ -1170,6 +1207,8 @@ def write_html(targets, path, args, started):
         verdict = f"<span class=badge style='background:{col}'>{TIER_LABEL[t.tier]}</span>"
         if t.provider:
             verdict += f" <b style='color:{col}'>{e(t.provider)}</b>"
+        if t.takeover:
+            verdict += " <span class=badge style='background:#ef4444;color:#fff'>TAKEOVER?</span>"
         verdict += f"<div class=why>{e(t.note)}</div>"
         status = {"live": "<span class=live>LIVE</span>", "no response": "<span class=dim>no response</span>"}.get(
             t.live, "<span class=dim>not probed</span>")
@@ -1206,6 +1245,18 @@ def write_html(targets, path, args, started):
         rows.append(f"<tr style='border-left:6px solid {col}' data-tier='{t.tier}'><td>{i}</td><td><b>{e(t.raw)}</b></td>"
                     f"<td>{what}</td><td>{own}</td><td>{verdict}</td><td>{status}</td><td>{ports}</td><td>{logins}</td></tr>")
     c = {k: sum(1 for t in targets if t.tier == k) for k in TIER_LABEL}
+    prow = ""
+    for i, t, w in portal_rows(targets):
+        col = TIER_HEX[t.tier]
+        final = w["final_url"] if w["final_url"] and w["final_url"].rstrip("/") != w["url"].rstrip("/") else ""
+        prow += (f"<tr><td>{i}</td><td class=login>{e(', '.join(w['logins']))}</td>"
+                 f"<td><a href='{e(w['url'])}' target=_blank><b>{e(w['url'])}</b></a>"
+                 + (f"<br><span class=dim>&rarr; {e(final)}</span>" if final else "") +
+                 f"</td><td>{e(w['title'])}</td><td>{e(t.raw)}</td>"
+                 f"<td><span class=badge style='background:{col}'>{TIER_LABEL[t.tier]}</span> {e(t.provider)}</td></tr>")
+    portals = (f"<h2 class=ph>Login portals ({len(portal_rows(targets))})</h2><table class=portals><thead><tr><th>#</th>"
+               f"<th>Portal type</th><th>URL</th><th>Title</th><th>Target</th><th>Verdict</th></tr></thead>"
+               f"<tbody>{prow}</tbody></table>") if prow else ""
     clients = e(", ".join(args.client)) or "not set"
     domains = e(", ".join(args.domain)) or "not set"
     doc = f"""<!DOCTYPE html><html><head><meta charset=utf-8><title>Scope check report</title><style>
@@ -1217,6 +1268,7 @@ h1{{margin:0 0 4px}} .meta{{color:#9ca3af;margin-bottom:16px}}
 table{{border-collapse:collapse;width:100%}} th{{background:#1f2937;text-align:left;padding:8px;position:sticky;top:0}}
 td{{padding:8px;vertical-align:top;border-bottom:1px solid #1f2937}} tr.note td{{color:#cbd5e1;font-size:13px;padding-top:0}}
 .badge{{display:inline-block;padding:2px 8px;border-radius:4px;color:#000;font-weight:700;font-size:12px}}
+.ph{{color:#e879f9;margin:8px 0 8px}} .mh{{margin:28px 0 8px}} table.portals{{border:1px solid #6b21a8}}
 .why{{margin-top:4px;font-size:13px;color:#cbd5e1;max-width:360px}} .dim{{color:#9ca3af;font-size:12px}} .ip{{color:#67e8f9}}
 .mag{{color:#e879f9;font-size:12px}} .live{{color:#22c55e;font-weight:700}} .login{{color:#e879f9;font-weight:700}}
 a{{color:#93c5fd}} img{{max-width:260px;margin-top:6px;border:1px solid #374151;border-radius:4px}} .web{{margin-bottom:8px}}
@@ -1227,12 +1279,15 @@ a{{color:#93c5fd}} img{{max-width:260px;margin-top:6px;border:1px solid #374151;
 <div class=card style='border-color:#22c55e' onclick="f('green')"><b>{c['green']}</b>Testable</div>
 <div class=card style='border-color:#3b82f6' onclick="f('blue')"><b>{c['blue']}</b>Testable with caveats</div>
 <div class=card style='border-color:#ef4444' onclick="f('red')"><b>{c['red']}</b>Do not test</div>
+<div class=card style='border-color:#6b7280' onclick="f('grey')"><b>{c['grey']}</b>Not reachable</div>
 <div class=card style='border-color:#38bdf8' onclick="f('')"><b>{len(targets)}</b>Show all</div>
 </div>
+{portals}
+<h2 class=mh>All targets</h2>
 <table><thead><tr><th>#</th><th>Target</th><th>What it is</th><th>Owner</th><th>Verdict</th><th>Status</th><th>Ports</th><th>Logins</th></tr></thead>
-<tbody>{''.join(rows)}</tbody></table>
+<tbody id=main>{''.join(rows)}</tbody></table>
 <p class=dim>Notes summarise provider testing policies and are not a substitute for the provider's current policy or the client's written authorisation.</p>
-<script>function f(t){{document.querySelectorAll('tbody tr').forEach(r=>{{r.style.display=(!t||r.dataset.tier===t)?'':'none'}})}}</script>
+<script>function f(t){{document.querySelectorAll('#main tr').forEach(r=>{{r.style.display=(!t||r.dataset.tier===t)?'':'none'}})}}</script>
 </body></html>"""
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(doc)
@@ -1297,6 +1352,7 @@ def main():
     r.run(targets, outdir)
     print_table(targets, args)
     print_notes(targets)
+    print_portals(targets)
     write_csv(targets, os.path.join(outdir, "results.csv"))
     with open(os.path.join(outdir, "results.json"), "w", encoding="utf-8") as fh:
         json.dump([asdict(t) for t in targets], fh, indent=2, default=str)
