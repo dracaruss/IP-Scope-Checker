@@ -33,8 +33,7 @@ Every row shows the URLs and hostnames found for that target, plus a one line re
 ## Useful options
 
 `--screenshots` to capture each web page  
-Open the HTML report in your browser. The screenshots show as thumbnails next to each URL in the "What it is" column, and clicking one opens it full size.  
-`firefox scopecheck_<timestamp>/report.html`  
+Open the HTML report in your browser. The screenshots show as thumbnails next to each URL in the "What it is" column, and clicking one opens it full size. `firefox scopecheck_<timestamp>/report.html`  
 Use `xdg-open` instead of firefox to open it in your default browser. The image files themselves are in the screenshots folder inside that same output folder, so keep the folder together if you move or share the report.  
 
 `--shodan` to pull known ports and CVEs from Shodan  
