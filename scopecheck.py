@@ -277,6 +277,7 @@ class Target:
     logins: list = field(default_factory=list)
     shodan: dict = field(default_factory=dict)
     takeover: str = ""
+    expected_ip: str = ""
     errors: list = field(default_factory=list)
 
     @property
@@ -353,24 +354,35 @@ def find_tool(names, must_contain=None):
 # Input parsing
 # --------------------------------------------------------------------------
 def parse_targets(path, max_hosts):
-    targets, seen, bad = [], set(), []
+    targets, seen, bad = [], {}, []
     with open(path, encoding="utf-8", errors="ignore") as fh:
         for line in fh:
             line = line.split("#", 1)[0].strip()
             if not line:
                 continue
-            for tok in re.split(r"[\s,;]+", line):
-                tok = tok.strip()
+            parent = None      # last hostname or URL on this line
+            for raw in re.split(r"[\s,;]+", line):
+                bracketed = raw[:1] in "([{<" and raw[-1:] in ")]}>"
+                tok = raw.strip("()[]{}<>\"'")
                 if not tok:
                     continue
+                # "host.example.com (1.2.3.4)" : the bracketed IP is what the scope expects the host to resolve to
+                if bracketed and parent is not None and is_ip(tok):
+                    parent.expected_ip = tok
+                    continue
                 try:
-                    for t in parse_token(tok, max_hosts):
-                        key = (t.kind, t.host, t.url, tuple(t.extra_ports))
-                        if key not in seen:
-                            seen.add(key)
-                            targets.append(t)
+                    new = parse_token(tok, max_hosts)
                 except ValueError as e:
-                    bad.append(f"{tok}: {e}")
+                    bad.append(f"{raw}: {e}")
+                    continue
+                kept = []
+                for t in new:
+                    key = (t.kind, t.host, t.url, tuple(t.extra_ports))
+                    if key not in seen:
+                        seen[key] = t
+                        targets.append(t)
+                    kept.append(seen[key])
+                parent = kept[0] if len(kept) == 1 and not is_ip(kept[0].host) else None
     return targets, bad
 
 
@@ -672,6 +684,8 @@ def classify(t, clients, domains, final=False):
     if not t.resolves:
         t.tier, t.provider = "grey", ""
         t.note = NOTE_TAKEOVER.format(target=t.cnames[-1]) if t.takeover else NOTE_NXDOMAIN
+        if t.expected_ip:
+            t.note += f" Your scope lists it as {t.expected_ip}."
         return
     if t.ips and all(is_private(i) for i in t.ips):
         t.private, t.tier, t.provider, t.note = True, "grey", "", NOTE_PRIVATE
@@ -704,6 +718,8 @@ def classify(t, clients, domains, final=False):
             t.note = f"IP leased from {org}." + (f" Serves {t.client_domain_hit}." if t.client_domain_hit else "")
     if t.tier == "green" and t.is_name and domains and not t.client_domain_hit:
         t.note += " Not under the client domains you listed."
+    if t.expected_ip and t.ips and t.expected_ip not in t.ips:
+        t.note += f" WARNING: your scope lists {t.expected_ip}, but it resolves to {', '.join(t.ips[:3])}."
 
 
 # --------------------------------------------------------------------------
@@ -1032,15 +1048,21 @@ def known_names(t):
 
 
 def print_table(targets, args):
-    tb = Table(box=box.SIMPLE_HEAVY, show_lines=True, header_style="bold white on grey23", expand=True)
-    tb.add_column("#", justify="right", style="dim", width=3)
-    tb.add_column("Target", style="bold", overflow="fold", ratio=3)
-    tb.add_column("What it is", overflow="fold", ratio=6)
-    tb.add_column("Owner", overflow="fold", ratio=3)
-    tb.add_column("Verdict", overflow="fold", ratio=5)
-    tb.add_column("Status", ratio=2)
-    tb.add_column("Ports", overflow="fold", ratio=2)
-    tb.add_column("Logins", overflow="fold", ratio=2)
+    def grid():
+        g = Table.grid(expand=True, padding=(0, 1))
+        g.add_column(justify="right", width=3)
+        g.add_column(ratio=3, overflow="fold")
+        g.add_column(ratio=6, overflow="fold")
+        g.add_column(ratio=3, overflow="fold")
+        g.add_column(ratio=5, overflow="fold")
+        g.add_column(ratio=2)
+        g.add_column(ratio=2, overflow="fold")
+        g.add_column(ratio=2, overflow="fold")
+        return g
+    head = grid()
+    head.add_row(*[Text(h, style="bold white") for h in
+                   ("#", "Target", "What it is", "Owner", "Verdict", "Status", "Ports", "Logins")])
+    console.print(Panel(head, box=box.HEAVY, border_style="grey50", padding=(0, 1)))
     for i, t in enumerate(targets, 1):
         org, asn, cc = t.owner_label()
         # what it is: URLs first, then names
@@ -1082,7 +1104,10 @@ def print_table(targets, args):
             verdict.append("  TAKEOVER?", style="bold white on red")
         if t.provider:
             verdict.append(f"  {t.provider}", style=TIER_STYLE[t.tier].replace("bold ", ""))
-        verdict.append("\n" + t.note, style="white" if t.tier != "green" else "dim")
+        main, _, warn = t.note.partition(" WARNING: ")
+        verdict.append("\n" + main, style="white" if t.tier != "green" else "dim")
+        if warn:
+            verdict.append("\nWARNING: " + warn, style="bold yellow")
 
         if t.live == "live":
             st = Text("LIVE", style="bold green")
@@ -1094,25 +1119,22 @@ def print_table(targets, args):
         if t.shodan.get("vulns"):
             ports.append(f"\n{len(t.shodan['vulns'])} CVEs", style="bold red")
         logins = Text("\n".join(t.logins), style="bold magenta")
-        tb.add_row(str(i), t.raw, what, own, verdict, st, ports, logins)
-    console.print(tb)
+        row = grid()
+        row.add_row(Text(str(i), style="dim"), Text(t.raw, style="bold"), what, own, verdict, st, ports, logins)
+        console.print(Panel(row, box=box.ROUNDED, border_style=TIER_STYLE[t.tier].replace("bold ", ""), padding=(0, 1)))
 
 
 def print_notes(targets):
-    """Group every target by verdict, one coloured panel per owner or provider."""
+    """Group the caveat, do-not-test and unreachable targets so they can be copied into the scope email."""
     groups = {}
     for t in targets:
-        if t.tier == "green":
-            org = t.owner_label()[0]
-            label = "Client owned" if t.note.startswith("Registered to the client") else (org if org and org != "unknown" else "")
-            key = (t.tier, label, t.note.split(" Serves")[0].split(" Not under")[0])
-        else:
-            key = (t.tier, t.provider or "", t.note.split(" Serves")[0])
-        groups.setdefault(key, []).append(t)
+        if t.tier in ("blue", "red", "grey"):
+            key = (t.tier, t.provider or "", t.note.split(" Serves")[0].split(" WARNING")[0])
+            groups.setdefault(key, []).append(t)
     if not groups:
         return
     console.print()
-    console.rule("[bold]Targets by verdict")
+    console.rule("[bold]Caveats, do not test and unreachable")
     for (tier, prov, note), ts in sorted(groups.items(), key=lambda kv: (TIER_ORDER[kv[0][0]], kv[0][1])):
         title = f"{TIER_LABEL[tier]}" + (f": {prov}" if prov else "")
         body = Text(note + "\n", style="white")
@@ -1338,8 +1360,6 @@ def main():
 
     console.print(Panel.fit(f"[bold cyan]scopecheck[/] v{VERSION}  [dim]external scope recon[/]", border_style="cyan"))
     targets, bad = parse_targets(args.input, args.max_hosts)
-    for b in bad:
-        console.print(f"[yellow]Skipped[/] {b}")
     if not targets:
         sys.exit("No valid targets found.")
     if not args.client:
@@ -1364,6 +1384,10 @@ def main():
         json.dump([asdict(t) for t in targets], fh, indent=2, default=str)
     write_html(targets, os.path.join(outdir, "report.html"), args, started)
     print_summary(targets, outdir)
+    if bad:
+        console.print(f"[yellow]Skipped {len(bad)} entries from the input file that are not an IP, range, hostname or URL:[/]")
+        for b in bad:
+            console.print(f"  [yellow]{b}[/]")
     errs = [(t.raw, e) for t in targets for e in t.errors]
     for raw, err in errs[:10]:
         console.print(f"[red]Error[/] {raw}: {err}")
