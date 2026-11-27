@@ -30,7 +30,7 @@ Green means the address is registered to the client. Yellow means it belongs to 
 
 ## Useful options
 
-Add `--screenshots` to capture each web page  
+`--screenshots` to capture each web page  
 `--shodan` to pull known ports and CVEs from Shodan  
 `--passive` to avoid sending any traffic to the targets  
 `--skip-red-probe` to avoid probing third party assets  
