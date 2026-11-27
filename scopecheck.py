@@ -279,6 +279,7 @@ class Target:
     takeover: str = ""
     expected_ip: str = ""
     base_note: str = ""
+    gov: str = ""
     errors: list = field(default_factory=list)
 
     @property
@@ -656,6 +657,125 @@ def shodan_internetdb(ip, timeout):
 # --------------------------------------------------------------------------
 # Classification
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Government clouds: hard stop. Detected by hostname, registry owner and the
+# IP ranges Microsoft and AWS publish for their government regions.
+# --------------------------------------------------------------------------
+NOTE_GOV = ("US government cloud or network. Hard stop: send no traffic until the client confirms in writing that this "
+            "resource is theirs and that testing it is authorised. For a commercial client this is almost always "
+            "a scoping error.")
+GOV_SUFFIXES = {
+    "usgovcloudapi.net": "Azure Government", "usgovcloudapp.net": "Azure Government",
+    "usgovtrafficmanager.net": "Azure Government", "azure.us": "Azure Government", "azurewebsites.us": "Azure Government",
+    "microsoftonline.us": "Microsoft 365 GCC High or DoD", "office365.us": "Microsoft 365 GCC High or DoD",
+    "microsoft.us": "Microsoft 365 GCC High or DoD", "sharepoint.us": "Microsoft 365 GCC High or DoD",
+    "onmicrosoft.us": "Microsoft 365 GCC High or DoD", "amazonaws-us-gov.com": "AWS GovCloud",
+    "oraclegovcloud.com": "Oracle Government Cloud", "mil": "US military domain (.mil)", "gov": "US government domain (.gov)",
+}
+GOV_ORG_RE = re.compile(r"department of defense|dod network information center|defense information systems agency|"
+                        r"\bdisa\b|\bdnic\b|headquarters,? usaisc", re.I)
+GOV_NETS = []              # list of (ip_network, label), filled by load_gov_ranges()
+GOV_CACHE = os.path.expanduser("~/.cache/scopecheck/gov_ranges.json")
+GOV_MAX_AGE = 7 * 86400
+
+
+def _fetch_gov_ranges(timeout):
+    """Download the published government ranges. Returns list of [cidr, label] or raises."""
+    import uuid
+    nets, rid = [], str(uuid.uuid4())
+    # Azure Government (includes the DoD regions)
+    page = requests.get("https://www.microsoft.com/en-us/download/details.aspx?id=57063", timeout=timeout,
+                        headers={"User-Agent": UA}).text
+    m = re.search(r"https://download\.microsoft\.com/download/[^\"'\s]+ServiceTags_AzureGovernment_\d+\.json", page)
+    if not m:
+        raise RuntimeError("Azure Government service tag file not found")
+    tags = requests.get(m.group(0), timeout=timeout).json()
+    for v in tags.get("values", []):
+        name = v.get("name", "")
+        if name.startswith("AzureCloud."):
+            label = "Azure Government DoD region" if "usdod" in name.lower() else "Azure Government"
+            nets += [[c, label] for c in v.get("properties", {}).get("addressPrefixes", [])]
+    for v in tags.get("values", []):
+        if v.get("name") == "AzureCloud":
+            nets += [[c, "Azure Government"] for c in v.get("properties", {}).get("addressPrefixes", [])]
+    # Microsoft 365 GCC High and DoD, minus anything shared with commercial Microsoft 365
+    def m365(instance):
+        j = requests.get(f"https://endpoints.office.com/endpoints/{instance}?clientrequestid={rid}", timeout=timeout).json()
+        return {ip for e in j for ip in e.get("ips", [])}
+    worldwide = [ipaddress.ip_network(c, strict=False) for c in m365("Worldwide")]
+    for inst, label in (("USGovDoD", "Microsoft 365 DoD"), ("USGovGCCHigh", "Microsoft 365 GCC High")):
+        for c in m365(inst):
+            n = ipaddress.ip_network(c, strict=False)
+            if not any(n.version == w.version and n.overlaps(w) for w in worldwide):
+                nets.append([c, label])
+    # AWS GovCloud
+    aws = requests.get("https://ip-ranges.amazonaws.com/ip-ranges.json", timeout=timeout).json()
+    for p in aws.get("prefixes", []):
+        if p.get("region", "").startswith("us-gov-"):
+            nets.append([p["ip_prefix"], "AWS GovCloud"])
+    for p in aws.get("ipv6_prefixes", []):
+        if p.get("region", "").startswith("us-gov-"):
+            nets.append([p["ipv6_prefix"], "AWS GovCloud"])
+    return nets
+
+
+def load_gov_ranges(timeout, refresh=False):
+    """Fill GOV_NETS from the weekly cache, refreshing it when stale. Returns a short status string."""
+    cache = None
+    try:
+        with open(GOV_CACHE) as fh:
+            cache = json.load(fh)
+    except Exception:
+        pass
+    stale = not cache or refresh or time.time() - cache.get("fetched", 0) > GOV_MAX_AGE
+    status = ""
+    if stale and requests:
+        try:
+            nets = _fetch_gov_ranges(timeout)
+            cache = {"fetched": time.time(), "nets": nets}
+            os.makedirs(os.path.dirname(GOV_CACHE), exist_ok=True)
+            with open(GOV_CACHE, "w") as fh:
+                json.dump(cache, fh)
+        except Exception as e:
+            status = f"download failed ({type(e).__name__})"
+    if not cache:
+        return "unavailable, hostname and registry checks only" + (f": {status}" if status else "")
+    GOV_NETS.clear()
+    seen = set()
+    for c, label in cache["nets"]:
+        if c in seen:
+            continue
+        seen.add(c)
+        try:
+            GOV_NETS.append((ipaddress.ip_network(c, strict=False), label))
+        except ValueError:
+            pass
+    age = datetime.fromtimestamp(cache["fetched"]).strftime("%Y-%m-%d")
+    return f"{len(GOV_NETS)} prefixes from {age}" + (" (refresh failed, using cached copy)" if status else "")
+
+
+def match_gov(t):
+    """Return a label if the target sits in a US government cloud or network, else ''."""
+    for n in [t.host] + t.cnames + list(t.ptr.values()):
+        n = (n or "").lower().rstrip(".")
+        if not n or is_ip(n):
+            continue
+        hit = under(n, GOV_SUFFIXES)
+        if hit:
+            return GOV_SUFFIXES[hit]
+        if ".us-gov-" in n and n.endswith(".amazonaws.com"):
+            return "AWS GovCloud"
+    for ip in t.ips:
+        a = ipaddress.ip_address(ip)
+        for net, label in GOV_NETS:
+            if a.version == net.version and a in net:
+                return label
+    for o in t.owners.values():
+        if GOV_ORG_RE.search(" ".join([o.get("org", ""), o.get("netname", ""), o.get("asn_name", "")] + o.get("entities", []))):
+            return "US Department of Defense network"
+    return ""
+
+
 def match_provider(t, use_tls=False):
     names = [t.host] + t.cnames + list(t.ptr.values())
     if use_tls:
@@ -709,6 +829,14 @@ def classify(t, clients, domains, final=False):
     if t.ips and all(is_private(i) for i in t.ips):
         t.private, t.tier = True, "grey"
         t.base_note = t.note = NOTE_PRIVATE
+        return
+
+    t.gov = match_gov(t)
+    if t.gov:
+        t.tier, t.provider, t.provider_kind = "red", t.gov, "gov"
+        t.base_note = t.note = NOTE_GOV
+        if t.expected_ip and t.ips and t.expected_ip not in t.ips:
+            t.note += f" WARNING: your scope lists {t.expected_ip}, but it resolves to {', '.join(t.ips[:3])}."
         return
 
     client_reg = False
@@ -1033,7 +1161,8 @@ class Runner:
                 for f in cf.as_completed([ex.submit(self._safe, self.passive, t) for t in targets]):
                     prog.advance(t1)
             if not self.a.passive:
-                todo = [t for t in targets if not t.private and t.resolves and not (self.a.skip_red_probe and t.tier == "red")]
+                todo = [t for t in targets if not t.private and t.resolves and not t.gov
+                        and not (self.a.skip_red_probe and t.tier == "red")]
                 t2 = prog.add_task("Active: ping, ports, web, TLS", total=len(todo))
                 with cf.ThreadPoolExecutor(max_workers=self.a.threads) as ex:
                     for f in cf.as_completed([ex.submit(self._safe, self.active, t) for t in todo]):
@@ -1067,7 +1196,7 @@ def sort_targets(targets):
     def group(t):
         if t.tier == "green":
             return "" if t.base_note.startswith("Registered to the client") else t.owner_label()[0].lower()
-        return (t.provider or "").lower()
+        return ("0" if t.gov else "1") + (t.provider or "").lower()
     return sorted(targets, key=lambda t: (TIER_ORDER[t.tier], group(t)))
 
 
@@ -1136,6 +1265,8 @@ def print_table(targets, args):
         verdict = Text(TIER_LABEL[t.tier], style=TIER_STYLE[t.tier])
         if t.takeover:
             verdict.append("  TAKEOVER?", style="bold white on red")
+        if t.gov:
+            verdict.append("  GOV CLOUD", style="bold white on red")
         if t.provider:
             verdict.append(f"  {t.provider}", style=TIER_STYLE[t.tier].replace("bold ", ""))
         main, _, warn = t.note.partition(" WARNING: ")
@@ -1148,7 +1279,7 @@ def print_table(targets, args):
         elif t.live == "no response":
             st = Text("no response", style="dim")
         else:
-            st = Text("not probed", style="dim")
+            st = Text("not probed" + (", hard stop" if t.gov else ""), style="bold red" if t.gov else "dim")
         ports = Text(", ".join(map(str, t.open_ports)), style="green")
         if t.shodan.get("vulns"):
             ports.append(f"\n{len(t.shodan['vulns'])} CVEs", style="bold red")
@@ -1168,7 +1299,7 @@ def print_notes(targets):
         return
     console.print()
     console.rule("[bold]Recap by provider: the blue, red and grey rows above, grouped")
-    for (tier, prov, note), items in sorted(groups.items(), key=lambda kv: (TIER_ORDER[kv[0][0]], kv[0][1].lower())):
+    for (tier, prov, note), items in sorted(groups.items(), key=lambda kv: (TIER_ORDER[kv[0][0]], kv[0][2] != NOTE_GOV, kv[0][1].lower())):
         title = TIER_LABEL[tier] + (f": {prov}" if prov else "")
         body = Text(note + "\n", style="white")
         body.append(", ".join(t.raw for _, t in items), style=TIER_STYLE[tier].replace("bold ", ""))
@@ -1223,6 +1354,9 @@ def print_summary(targets, outdir):
     s.append(f"{c['grey']} not reachable   ", style="bold bright_black")
     s.append(f"{live} live   ", style="bold green")
     s.append(f"{len(portal_rows(targets))} login portals on {logins} targets", style="bold magenta")
+    gov = sum(1 for t in targets if t.gov)
+    if gov:
+        s.append(f"   {gov} GOVERNMENT CLOUD, hard stop", style="bold white on red")
     if take:
         s.append(f"   {take} possible takeovers", style="bold white on red")
     console.print(Panel(s, title="Summary", border_style="cyan", title_align="left"))
@@ -1270,12 +1404,14 @@ def write_html(targets, path, args, started):
             verdict += f" <b style='color:{col}'>{e(t.provider)}</b>"
         if t.takeover:
             verdict += " <span class=badge style='background:#ef4444;color:#fff'>TAKEOVER?</span>"
+        if t.gov:
+            verdict += " <span class=badge style='background:#7f1d1d;color:#fff'>GOV CLOUD</span>"
         main, _, warn = t.note.partition(" WARNING: ")
         verdict += f"<div class=why>{e(main)}</div>"
         if warn:
             verdict += f"<div class=why style='color:#eab308;font-weight:700'>WARNING: {e(warn)}</div>"
         status = {"live": "<span class=live>LIVE</span>", "no response": "<span class=dim>no response</span>"}.get(
-            t.live, "<span class=dim>not probed</span>")
+            t.live, "<b style='color:#ef4444'>not probed, hard stop</b>" if t.gov else "<span class=dim>not probed</span>")
         what = ""
         for w in t.web:
             if w["status"] is None:
@@ -1378,6 +1514,8 @@ def main():
     ap.add_argument("--screenshots", action="store_true", help="screenshot web services (gowitness, else headless Chrome)")
     ap.add_argument("--shodan", action="store_true", help="query Shodan InternetDB (free, no key) for known ports and CVEs")
     ap.add_argument("--no-external-tools", action="store_true", help="ignore httpx, dnsx and gowitness even if installed")
+    ap.add_argument("--no-gov-ranges", action="store_true", help="skip downloading government cloud IP ranges")
+    ap.add_argument("--refresh-gov-ranges", action="store_true", help="force a fresh download of government cloud IP ranges")
     args = ap.parse_args()
     for c in list(args.client):
         args.client.remove(c)
@@ -1406,9 +1544,15 @@ def main():
         console.print(f"[yellow]Optional modules missing ({', '.join(missing)}); some checks fall back or are skipped.[/]")
 
     r = Runner(args)
-    tools = [f"httpx: {'yes' if r.httpx else 'no'}", f"dnsx: {'yes' if r.dnsx else 'no'}"]
+    gov = "skipped, hostname and registry checks only" if args.no_gov_ranges else \
+        load_gov_ranges(max(10, args.timeout * 5), args.refresh_gov_ranges)
+    tools = [f"httpx: {'yes' if r.httpx else 'no'}", f"dnsx: {'yes' if r.dnsx else 'no'}", f"gov ranges: {gov}"]
     mode = "passive only" if args.passive else ("active, not probing DO NOT TEST targets" if args.skip_red_probe else "active")
     console.print(f"[dim]{len(targets)} targets | mode: {mode} | {' | '.join(tools)}[/]")
+    if gov.startswith("unavailable"):
+        console.print("[bold yellow]WARNING: government cloud IP ranges could not be downloaded. Hostnames and registry "
+                      "owners are still checked, but a bare IP in Azure Government, a DoD region or AWS GovCloud will "
+                      "NOT be caught. Check your connection and run again with --refresh-gov-ranges.[/]")
 
     t0 = time.time()
     r.run(targets, outdir)
